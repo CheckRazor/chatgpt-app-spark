@@ -2,7 +2,7 @@ import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { Trophy, Users, LogOut, Shield } from "lucide-react";
+import { Trophy, Users, LogOut, Shield, Calendar } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 interface LayoutProps {
@@ -70,7 +70,16 @@ const Layout = ({ children }: LayoutProps) => {
                 Players
               </Button>
             </Link>
-            {/* More navigation items will be added in later phases */}
+            <Link to="/events">
+              <Button
+                variant={isActive("/events") || location.pathname.startsWith("/events") ? "default" : "ghost"}
+                size="sm"
+                className="rounded-b-none"
+              >
+                <Calendar className="mr-2 h-4 w-4" />
+                Events
+              </Button>
+            </Link>
           </div>
         </div>
       </nav>

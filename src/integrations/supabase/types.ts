@@ -14,6 +14,83 @@ export type Database = {
   }
   public: {
     Tables: {
+      events: {
+        Row: {
+          created_at: string
+          created_by: string
+          deleted_at: string | null
+          description: string | null
+          event_date: string
+          id: string
+          location: string | null
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          created_by: string
+          deleted_at?: string | null
+          description?: string | null
+          event_date: string
+          id?: string
+          location?: string | null
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          deleted_at?: string | null
+          description?: string | null
+          event_date?: string
+          id?: string
+          location?: string | null
+          name?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      ocr_uploads: {
+        Row: {
+          created_at: string
+          event_id: string
+          id: string
+          original_text: string | null
+          processed_data: Json | null
+          status: string
+          updated_at: string
+          uploaded_by: string
+        }
+        Insert: {
+          created_at?: string
+          event_id: string
+          id?: string
+          original_text?: string | null
+          processed_data?: Json | null
+          status?: string
+          updated_at?: string
+          uploaded_by: string
+        }
+        Update: {
+          created_at?: string
+          event_id?: string
+          id?: string
+          original_text?: string | null
+          processed_data?: Json | null
+          status?: string
+          updated_at?: string
+          uploaded_by?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ocr_uploads_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       players: {
         Row: {
           aliases: string[] | null
@@ -81,6 +158,60 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
+      }
+      scores: {
+        Row: {
+          created_at: string
+          created_by: string
+          event_id: string
+          id: string
+          notes: string | null
+          player_id: string
+          rank: number | null
+          score: number
+          updated_at: string
+          verified: boolean
+        }
+        Insert: {
+          created_at?: string
+          created_by: string
+          event_id: string
+          id?: string
+          notes?: string | null
+          player_id: string
+          rank?: number | null
+          score: number
+          updated_at?: string
+          verified?: boolean
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          event_id?: string
+          id?: string
+          notes?: string | null
+          player_id?: string
+          rank?: number | null
+          score?: number
+          updated_at?: string
+          verified?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scores_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scores_player_id_fkey"
+            columns: ["player_id"]
+            isOneToOne: false
+            referencedRelation: "players"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       user_roles: {
         Row: {
