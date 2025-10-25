@@ -98,6 +98,13 @@ const EventList = ({ onEdit, canManage }: EventListProps) => {
                 <Upload className="h-4 w-4 mr-1" />
                 Scores
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigate(`/events/${event.id}/details`)}
+              >
+                Manage
+              </Button>
               {canManage && (
                 <Button
                   variant="ghost"

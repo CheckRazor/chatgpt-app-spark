@@ -14,6 +14,63 @@ export type Database = {
   }
   public: {
     Tables: {
+      event_totals: {
+        Row: {
+          created_at: string
+          created_by: string
+          distributed_amount: number
+          event_id: string
+          id: string
+          medal_id: string
+          total_amount: number
+          updated_at: string
+          verified: boolean
+          verified_at: string | null
+          verified_by: string | null
+        }
+        Insert: {
+          created_at?: string
+          created_by: string
+          distributed_amount?: number
+          event_id: string
+          id?: string
+          medal_id: string
+          total_amount: number
+          updated_at?: string
+          verified?: boolean
+          verified_at?: string | null
+          verified_by?: string | null
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          distributed_amount?: number
+          event_id?: string
+          id?: string
+          medal_id?: string
+          total_amount?: number
+          updated_at?: string
+          verified?: boolean
+          verified_at?: string | null
+          verified_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "event_totals_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "event_totals_medal_id_fkey"
+            columns: ["medal_id"]
+            isOneToOne: false
+            referencedRelation: "medals"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       events: {
         Row: {
           created_at: string
@@ -47,6 +104,104 @@ export type Database = {
           location?: string | null
           name?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      ledger_transactions: {
+        Row: {
+          amount: number
+          created_at: string
+          created_by: string
+          description: string | null
+          event_id: string | null
+          id: string
+          medal_id: string
+          player_id: string
+          raffle_id: string | null
+          transaction_type: string
+        }
+        Insert: {
+          amount: number
+          created_at?: string
+          created_by: string
+          description?: string | null
+          event_id?: string | null
+          id?: string
+          medal_id: string
+          player_id: string
+          raffle_id?: string | null
+          transaction_type: string
+        }
+        Update: {
+          amount?: number
+          created_at?: string
+          created_by?: string
+          description?: string | null
+          event_id?: string | null
+          id?: string
+          medal_id?: string
+          player_id?: string
+          raffle_id?: string | null
+          transaction_type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ledger_transactions_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ledger_transactions_medal_id_fkey"
+            columns: ["medal_id"]
+            isOneToOne: false
+            referencedRelation: "medals"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ledger_transactions_player_id_fkey"
+            columns: ["player_id"]
+            isOneToOne: false
+            referencedRelation: "players"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ledger_transactions_raffle_id_fkey"
+            columns: ["raffle_id"]
+            isOneToOne: false
+            referencedRelation: "raffles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      medals: {
+        Row: {
+          color: string | null
+          created_at: string
+          icon: string | null
+          id: string
+          name: string
+          updated_at: string
+          value: number
+        }
+        Insert: {
+          color?: string | null
+          created_at?: string
+          icon?: string | null
+          id?: string
+          name: string
+          updated_at?: string
+          value: number
+        }
+        Update: {
+          color?: string | null
+          created_at?: string
+          icon?: string | null
+          id?: string
+          name?: string
+          updated_at?: string
+          value?: number
         }
         Relationships: []
       }
@@ -158,6 +313,114 @@ export type Database = {
           updated_at?: string
         }
         Relationships: []
+      }
+      raffle_entries: {
+        Row: {
+          created_at: string
+          id: string
+          is_winner: boolean
+          player_id: string
+          prize_amount: number | null
+          raffle_id: string
+          updated_at: string
+          weight: number
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          is_winner?: boolean
+          player_id: string
+          prize_amount?: number | null
+          raffle_id: string
+          updated_at?: string
+          weight?: number
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_winner?: boolean
+          player_id?: string
+          prize_amount?: number | null
+          raffle_id?: string
+          updated_at?: string
+          weight?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "raffle_entries_player_id_fkey"
+            columns: ["player_id"]
+            isOneToOne: false
+            referencedRelation: "players"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raffle_entries_raffle_id_fkey"
+            columns: ["raffle_id"]
+            isOneToOne: false
+            referencedRelation: "raffles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      raffles: {
+        Row: {
+          created_at: string
+          created_by: string
+          description: string | null
+          drawn_at: string | null
+          event_id: string
+          id: string
+          medal_id: string
+          name: string
+          status: string
+          total_prizes: number
+          updated_at: string
+          weight_formula: string
+        }
+        Insert: {
+          created_at?: string
+          created_by: string
+          description?: string | null
+          drawn_at?: string | null
+          event_id: string
+          id?: string
+          medal_id: string
+          name: string
+          status?: string
+          total_prizes: number
+          updated_at?: string
+          weight_formula?: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string
+          description?: string | null
+          drawn_at?: string | null
+          event_id?: string
+          id?: string
+          medal_id?: string
+          name?: string
+          status?: string
+          total_prizes?: number
+          updated_at?: string
+          weight_formula?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "raffles_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raffles_medal_id_fkey"
+            columns: ["medal_id"]
+            isOneToOne: false
+            referencedRelation: "medals"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       scores: {
         Row: {
