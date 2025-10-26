@@ -14,6 +14,53 @@ export type Database = {
   }
   public: {
     Tables: {
+      batch_operations: {
+        Row: {
+          client_ref: string | null
+          created_at: string
+          created_by: string
+          event_id: string | null
+          id: string
+          metadata: Json | null
+          operation_type: string
+          rolled_back_at: string | null
+          rolled_back_by: string | null
+          status: string
+        }
+        Insert: {
+          client_ref?: string | null
+          created_at?: string
+          created_by: string
+          event_id?: string | null
+          id?: string
+          metadata?: Json | null
+          operation_type: string
+          rolled_back_at?: string | null
+          rolled_back_by?: string | null
+          status?: string
+        }
+        Update: {
+          client_ref?: string | null
+          created_at?: string
+          created_by?: string
+          event_id?: string | null
+          id?: string
+          metadata?: Json | null
+          operation_type?: string
+          rolled_back_at?: string | null
+          rolled_back_by?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "batch_operations_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       event_totals: {
         Row: {
           created_at: string
@@ -110,6 +157,7 @@ export type Database = {
       ledger_transactions: {
         Row: {
           amount: number
+          batch_operation_id: string | null
           created_at: string
           created_by: string
           description: string | null
@@ -122,6 +170,7 @@ export type Database = {
         }
         Insert: {
           amount: number
+          batch_operation_id?: string | null
           created_at?: string
           created_by: string
           description?: string | null
@@ -134,6 +183,7 @@ export type Database = {
         }
         Update: {
           amount?: number
+          batch_operation_id?: string | null
           created_at?: string
           created_by?: string
           description?: string | null
@@ -145,6 +195,13 @@ export type Database = {
           transaction_type?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "ledger_transactions_batch_operation_id_fkey"
+            columns: ["batch_operation_id"]
+            isOneToOne: false
+            referencedRelation: "batch_operations"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "ledger_transactions_event_id_fkey"
             columns: ["event_id"]
@@ -316,6 +373,7 @@ export type Database = {
       }
       raffle_entries: {
         Row: {
+          batch_operation_id: string | null
           created_at: string
           id: string
           is_winner: boolean
@@ -326,6 +384,7 @@ export type Database = {
           weight: number
         }
         Insert: {
+          batch_operation_id?: string | null
           created_at?: string
           id?: string
           is_winner?: boolean
@@ -336,6 +395,7 @@ export type Database = {
           weight?: number
         }
         Update: {
+          batch_operation_id?: string | null
           created_at?: string
           id?: string
           is_winner?: boolean
@@ -346,6 +406,13 @@ export type Database = {
           weight?: number
         }
         Relationships: [
+          {
+            foreignKeyName: "raffle_entries_batch_operation_id_fkey"
+            columns: ["batch_operation_id"]
+            isOneToOne: false
+            referencedRelation: "batch_operations"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "raffle_entries_player_id_fkey"
             columns: ["player_id"]

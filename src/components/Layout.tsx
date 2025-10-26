@@ -2,7 +2,7 @@ import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { Trophy, Users, LogOut, Shield, Calendar } from "lucide-react";
+import { Trophy, Users, LogOut, Shield, Calendar, Package } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 interface LayoutProps {
@@ -10,7 +10,7 @@ interface LayoutProps {
 }
 
 const Layout = ({ children }: LayoutProps) => {
-  const { signOut, userRole, user } = useAuth();
+  const { signOut, userRole, user, isAdmin, isLeader } = useAuth();
   const location = useLocation();
 
   const isActive = (path: string) => location.pathname === path;
@@ -80,6 +80,18 @@ const Layout = ({ children }: LayoutProps) => {
                 Events
               </Button>
             </Link>
+            {(isAdmin || isLeader) && (
+              <Link to="/bulk-operations">
+                <Button
+                  variant={isActive("/bulk-operations") ? "default" : "ghost"}
+                  size="sm"
+                  className="rounded-b-none"
+                >
+                  <Package className="mr-2 h-4 w-4" />
+                  Bulk Operations
+                </Button>
+              </Link>
+            )}
           </div>
         </div>
       </nav>

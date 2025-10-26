@@ -95,6 +95,22 @@ const ScoreReview = ({ eventId, parsedScores, canManage }: ScoreReviewProps) => 
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
 
+      // Create batch operation
+      const { data: batchOp, error: batchError } = await supabase
+        .from("batch_operations")
+        .insert({
+          operation_type: "score_import",
+          event_id: eventId,
+          created_by: user.id,
+          metadata: {
+            score_count: verifiedScores.length,
+          },
+        })
+        .select()
+        .single();
+
+      if (batchError) throw batchError;
+
       const scoreData = verifiedScores.map((s, idx) => ({
         event_id: eventId,
         player_id: s.playerId!,

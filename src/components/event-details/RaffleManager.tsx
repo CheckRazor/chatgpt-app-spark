@@ -116,12 +116,32 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
 
+      // Create batch operation
+      const { data: batchOp, error: batchError } = await supabase
+        .from("batch_operations")
+        .insert({
+          operation_type: "raffle_draw",
+          event_id: eventId,
+          created_by: user.id,
+          metadata: {
+            raffle_id: raffleId,
+            raffle_name: raffle.name,
+            total_prizes: raffle.total_prizes,
+            winners_count: winners.size,
+          },
+        })
+        .select()
+        .single();
+
+      if (batchError) throw batchError;
+
       const entries = scores.map(score => ({
         raffle_id: raffleId,
         player_id: score.player_id,
         weight: score.score,
         is_winner: winners.has(score.player_id),
         prize_amount: winners.has(score.player_id) ? 1 : 0,
+        batch_operation_id: batchOp.id,
       }));
 
       await supabase.from("raffle_entries").insert(entries);
@@ -145,6 +165,7 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
           raffle_id: raffleId,
           description: `Won raffle: ${raffle.name}`,
           created_by: user.id,
+          batch_operation_id: batchOp.id,
         }]);
       }
 

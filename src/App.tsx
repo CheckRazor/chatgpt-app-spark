@@ -8,6 +8,7 @@ import Auth from "./pages/Auth";
 import Events from "./pages/Events";
 import EventScores from "./pages/EventScores";
 import EventDetails from "./pages/EventDetails";
+import BulkOperations from "./pages/BulkOperations";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -24,6 +25,7 @@ const App = () => (
           <Route path="/events" element={<Events />} />
           <Route path="/events/:eventId/scores" element={<EventScores />} />
           <Route path="/events/:eventId/details" element={<EventDetails />} />
+          <Route path="/bulk-operations" element={<BulkOperations />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
