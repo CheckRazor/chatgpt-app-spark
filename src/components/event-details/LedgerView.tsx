@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { format } from "date-fns";
+import { useQuery } from "@tanstack/react-query";
+import ExportButtons from "@/components/exports/ExportButtons";
+import { exportLedgerCSV } from "@/lib/exports";
 
 interface Player {
   canonical_name: string;
@@ -27,32 +30,25 @@ interface LedgerViewProps {
 }
 
 const LedgerView = ({ eventId }: LedgerViewProps) => {
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetchTransactions();
-  }, [eventId]);
-
-  const fetchTransactions = async () => {
-    try {
-      const { data } = await supabase
+  const { data: transactions, isLoading: loading } = useQuery({
+    queryKey: ["ledger", eventId],
+    queryFn: async () => {
+      const { data, error } = await supabase
         .from("ledger_transactions")
-        .select("*, players(canonical_name), medals(name, color)")
+        .select("*, players(canonical_name), medals(name, color), events(name)")
         .eq("event_id", eventId)
         .order("created_at", { ascending: false });
 
-      if (data) setTransactions(data);
-    } finally {
-      setLoading(false);
-    }
-  };
+      if (error) throw error;
+      return data;
+    },
+  });
 
   if (loading) {
     return <div className="text-center py-4">Loading transactions...</div>;
   }
 
-  if (transactions.length === 0) {
+  if (!transactions || transactions.length === 0) {
     return (
       <div className="text-center py-8 text-muted-foreground">
         No transactions recorded for this event yet.
@@ -60,8 +56,19 @@ const LedgerView = ({ eventId }: LedgerViewProps) => {
     );
   }
 
+  const event = transactions[0]?.events;
+
   return (
-    <Table>
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <ExportButtons
+          onDiscordExport={() => "Ledger Discord export coming soon"}
+          onCSVExport={() => exportLedgerCSV(transactions, event?.name)}
+          label="Export Ledger"
+        />
+      </div>
+      <div className="rounded-lg border">
+        <Table>
       <TableHeader>
         <TableRow>
           <TableHead>Date</TableHead>
@@ -98,7 +105,9 @@ const LedgerView = ({ eventId }: LedgerViewProps) => {
           </TableRow>
         ))}
       </TableBody>
-    </Table>
+        </Table>
+      </div>
+    </div>
   );
 };
 

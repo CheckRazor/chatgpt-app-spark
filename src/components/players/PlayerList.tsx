@@ -5,6 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Edit, UserMinus, Users as UsersIcon } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import ExportButtons from "@/components/exports/ExportButtons";
+import { exportPlayersCSV } from "@/lib/exports";
 
 interface Player {
   id: string;
@@ -73,7 +75,14 @@ const PlayerList = ({ onEdit }: PlayerListProps) => {
   const getAlts = (mainId: string) => players.filter((p) => p.main_player_id === mainId);
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <ExportButtons
+          onDiscordExport={() => "Player export feature coming soon"}
+          onCSVExport={() => exportPlayersCSV(players)}
+          label="Export Players"
+        />
+      </div>
       {mainPlayers.map((player) => {
         const alts = getAlts(player.id);
         

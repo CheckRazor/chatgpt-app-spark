@@ -2,7 +2,7 @@ import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { Trophy, Users, LogOut, Shield, Calendar, Package } from "lucide-react";
+import { Trophy, Users, LogOut, Shield, Calendar, Package, LayoutDashboard } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 interface LayoutProps {
@@ -60,6 +60,16 @@ const Layout = ({ children }: LayoutProps) => {
       <nav className="border-b bg-muted/50">
         <div className="container mx-auto px-4">
           <div className="flex gap-1">
+            <Link to="/dashboard">
+              <Button
+                variant={isActive("/dashboard") ? "default" : "ghost"}
+                size="sm"
+                className="rounded-b-none"
+              >
+                <LayoutDashboard className="mr-2 h-4 w-4" />
+                Dashboard
+              </Button>
+            </Link>
             <Link to="/">
               <Button
                 variant={isActive("/") ? "default" : "ghost"}
