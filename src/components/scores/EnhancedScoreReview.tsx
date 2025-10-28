@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle, X, Search, AlertTriangle } from "lucide-react";
+import { CheckCircle, X, Search, AlertTriangle, Trash2, GitMerge, Plus, Edit3 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { getConfidenceColor, getConfidenceBadgeVariant } from "@/lib/ocrProcessing";
@@ -91,6 +91,7 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
       parsed_name: s.parsedName,
       parsed_score: s.parsedScore,
       raw_text: s.rawText,
+      raw_score_text: s.parsedScore.toLocaleString(), // Store formatted version
       corrected_value: s.correctedValue,
       confidence: s.confidence,
       linked_player_id: s.linkedPlayerId,
@@ -116,9 +117,17 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
     ));
   };
 
-  const handleScoreChange = (index: number, value: string) => {
+  const handleNameChange = (index: number, value: string) => {
     setScores(prev => prev.map((s, i) => 
-      i === index ? { ...s, parsedScore: parseInt(value) || 0 } : s
+      i === index ? { ...s, parsedName: value } : s
+    ));
+  };
+
+  const handleScoreChange = (index: number, value: string) => {
+    // Remove commas and parse
+    const numericValue = value.replace(/,/g, '');
+    setScores(prev => prev.map((s, i) => 
+      i === index ? { ...s, parsedScore: parseInt(numericValue) || 0 } : s
     ));
   };
 
@@ -133,6 +142,43 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
       s.confidence >= 0.95 && s.linkedPlayerId ? { ...s, isVerified: true } : s
     ));
     toast.success("✅ High confidence scores approved");
+  };
+
+  const handleDeleteRow = (index: number) => {
+    setScores(prev => prev.filter((_, i) => i !== index));
+    toast.success("Row deleted");
+  };
+
+  const handleAddRow = () => {
+    const newRow: ScoreRow = {
+      parsedName: "",
+      parsedScore: 0,
+      rawText: "Manual entry",
+      correctedValue: null,
+      confidence: 1.0,
+      imageSource: "Manual",
+      isVerified: false,
+    };
+    setScores(prev => [...prev, newRow]);
+  };
+
+  const handleMergeDuplicates = () => {
+    const playerMap = new Map<string, ScoreRow>();
+    
+    scores.forEach(score => {
+      if (!score.linkedPlayerId) return;
+      
+      const existing = playerMap.get(score.linkedPlayerId);
+      if (!existing || score.parsedScore > existing.parsedScore) {
+        playerMap.set(score.linkedPlayerId, score);
+      }
+    });
+    
+    const uniqueScores = Array.from(playerMap.values());
+    const removedCount = scores.length - uniqueScores.length;
+    
+    setScores(uniqueScores);
+    toast.success(`🔀 ${removedCount} duplicates merged, kept highest scores`);
   };
 
   const handleCommitScores = async () => {
@@ -226,8 +272,8 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-4">
-        <div className="relative flex-1">
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             placeholder="Search by name or confidence..."
@@ -237,10 +283,25 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
           />
         </div>
         
+        <Button variant="outline" size="sm" onClick={handleAddRow}>
+          <Plus className="mr-2 h-4 w-4" />
+          Add Row
+        </Button>
+
+        <Button 
+          variant="outline" 
+          size="sm" 
+          onClick={handleMergeDuplicates}
+          disabled={scores.filter(s => s.linkedPlayerId).length < 2}
+        >
+          <GitMerge className="mr-2 h-4 w-4" />
+          Merge Duplicates
+        </Button>
+        
         {highConfidenceCount > 0 && (
-          <Button variant="outline" onClick={bulkApproveHighConfidence}>
+          <Button variant="outline" size="sm" onClick={bulkApproveHighConfidence}>
             <CheckCircle className="mr-2 h-4 w-4" />
-            Bulk Approve High Confidence ({highConfidenceCount})
+            Bulk Approve ≥95% ({highConfidenceCount})
           </Button>
         )}
       </div>
@@ -264,13 +325,22 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
                 key={index} 
                 className={`${score.isVerified ? 'bg-muted/50' : ''} ${getConfidenceColor(score.confidence)} border-l-4`}
               >
-                <TableCell className="font-medium">{score.parsedName}</TableCell>
+                <TableCell className="font-medium">
+                  <Input
+                    type="text"
+                    value={score.parsedName}
+                    onChange={(e) => handleNameChange(index, e.target.value)}
+                    className="w-full"
+                    placeholder="Player name"
+                  />
+                </TableCell>
                 <TableCell>
                   <Input
-                    type="number"
-                    value={score.parsedScore}
+                    type="text"
+                    value={score.parsedScore.toLocaleString()}
                     onChange={(e) => handleScoreChange(index, e.target.value)}
-                    className="w-28"
+                    className="w-32"
+                    placeholder="0"
                   />
                   {score.correctedValue && (
                     <Badge variant="outline" className="mt-1 text-xs">
@@ -311,18 +381,27 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
                   )}
                 </TableCell>
                 <TableCell className="text-right">
-                  <Button
-                    variant={score.isVerified ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => handleVerify(index)}
-                    disabled={!score.linkedPlayerId}
-                  >
-                    {score.isVerified ? (
-                      <CheckCircle className="h-4 w-4" />
-                    ) : (
-                      <X className="h-4 w-4" />
-                    )}
-                  </Button>
+                  <div className="flex gap-1 justify-end">
+                    <Button
+                      variant={score.isVerified ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => handleVerify(index)}
+                      disabled={!score.linkedPlayerId}
+                    >
+                      {score.isVerified ? (
+                        <CheckCircle className="h-4 w-4" />
+                      ) : (
+                        <X className="h-4 w-4" />
+                      )}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleDeleteRow(index)}
+                    >
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}

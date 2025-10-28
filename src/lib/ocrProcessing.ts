@@ -111,45 +111,80 @@ export const correctNumericOCR = (text: string): { value: number; corrected: boo
 };
 
 /**
- * Parse OCR text into structured score entries
+ * Parse OCR text into structured score entries with strict name/score mode
  */
-export const parseScoresFromText = (text: string, fileName: string, autoCorrect: boolean = true): OCRResult[] => {
+export const parseScoresFromText = (text: string, fileName: string, autoCorrect: boolean = true, strictMode: boolean = true): OCRResult[] => {
   const lines = text.split('\n').filter(line => line.trim());
   const scores: OCRResult[] = [];
   
+  // Strict regex: Name (letters/spaces/numbers), comma or space, then score with commas
+  const strictPattern = /^([A-Za-z0-9\s]+)[,\s]+(\d{1,3}(?:,\d{3})*)$/;
+  
   lines.forEach((line, index) => {
-    // Look for score patterns (numbers with optional commas)
-    const scorePattern = /[\d,]+/g;
-    const scoreMatches = line.match(scorePattern);
+    const trimmedLine = line.trim();
     
-    // Look for names (consecutive letters, may include spaces)
-    const namePattern = /[a-zA-Z\s]+/g;
-    const nameMatches = line.match(namePattern);
-    
-    if (scoreMatches && nameMatches) {
-      // Take last number as score (usually rightmost)
-      const rawScore = scoreMatches[scoreMatches.length - 1];
-      const correction = autoCorrect ? correctNumericOCR(rawScore) : { value: parseInt(rawScore.replace(/,/g, ''), 10), corrected: false, confidence: 0.9 };
+    if (strictMode) {
+      // Use strict pattern matching
+      const match = strictPattern.exec(trimmedLine);
+      if (!match) return; // Skip lines that don't match pattern
       
-      // Take first name match
-      const name = nameMatches[0].trim();
+      const name = match[1].trim();
+      const rawScoreText = match[2];
       
-      // Calculate base confidence from Tesseract (simulated based on patterns)
+      const correction = autoCorrect ? correctNumericOCR(rawScoreText) : { 
+        value: parseInt(rawScoreText.replace(/,/g, ''), 10), 
+        corrected: false, 
+        confidence: 0.9 
+      };
+      
+      // Calculate confidence
       let baseConfidence = 0.95;
-      if (line.includes('?') || line.includes('~')) baseConfidence = 0.5;
-      if (name.length < 2) baseConfidence *= 0.6;
+      if (name.length < 2) baseConfidence *= 0.7;
+      if (rawScoreText.includes('O') || rawScoreText.includes('S')) baseConfidence *= 0.8;
       
-      // Combine confidences
       const finalConfidence = baseConfidence * correction.confidence;
       
       scores.push({
         parsedName: name,
         parsedScore: correction.value,
-        rawText: line.trim(),
+        rawText: trimmedLine,
         correctedValue: correction.corrected ? correction.value : null,
         confidence: finalConfidence,
-        originalLine: line,
+        originalLine: trimmedLine,
       });
+    } else {
+      // Legacy loose parsing
+      const scorePattern = /[\d,]+/g;
+      const scoreMatches = trimmedLine.match(scorePattern);
+      
+      const namePattern = /[a-zA-Z\s]+/g;
+      const nameMatches = trimmedLine.match(namePattern);
+      
+      if (scoreMatches && nameMatches) {
+        const rawScore = scoreMatches[scoreMatches.length - 1];
+        const correction = autoCorrect ? correctNumericOCR(rawScore) : { 
+          value: parseInt(rawScore.replace(/,/g, ''), 10), 
+          corrected: false, 
+          confidence: 0.9 
+        };
+        
+        const name = nameMatches[0].trim();
+        
+        let baseConfidence = 0.95;
+        if (trimmedLine.includes('?') || trimmedLine.includes('~')) baseConfidence = 0.5;
+        if (name.length < 2) baseConfidence *= 0.6;
+        
+        const finalConfidence = baseConfidence * correction.confidence;
+        
+        scores.push({
+          parsedName: name,
+          parsedScore: correction.value,
+          rawText: trimmedLine,
+          correctedValue: correction.corrected ? correction.value : null,
+          confidence: finalConfidence,
+          originalLine: trimmedLine,
+        });
+      }
     }
   });
   

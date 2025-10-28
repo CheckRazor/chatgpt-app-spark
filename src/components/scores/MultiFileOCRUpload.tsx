@@ -28,6 +28,7 @@ interface MultiFileOCRUploadProps {
 const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUploadProps) => {
   const [files, setFiles] = useState<FileUploadStatus[]>([]);
   const [autoCorrect, setAutoCorrect] = useState(true);
+  const [strictMode, setStrictMode] = useState(true);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files || []);
@@ -135,7 +136,8 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
         const parsed = parseScoresFromText(
           fileStatus.extractedText, 
           fileStatus.file.name,
-          autoCorrect
+          autoCorrect,
+          strictMode
         );
         
         parsed.forEach(score => {
@@ -172,15 +174,26 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
             <label htmlFor="multi-file-upload" className="text-sm font-medium">
               Upload Score Sheet Images (Multiple)
             </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={autoCorrect}
-                onChange={(e) => setAutoCorrect(e.target.checked)}
-                className="rounded"
-              />
-              Auto-Correct Numeric OCR
-            </label>
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={strictMode}
+                  onChange={(e) => setStrictMode(e.target.checked)}
+                  className="rounded"
+                />
+                Strict Name/Score Mode
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={autoCorrect}
+                  onChange={(e) => setAutoCorrect(e.target.checked)}
+                  className="rounded"
+                />
+                Auto-Correct Numeric OCR
+              </label>
+            </div>
           </div>
           
           <div className="border-2 border-dashed rounded-lg p-8 text-center hover:border-primary/50 transition-colors">
