@@ -14,6 +14,30 @@ export type Database = {
   }
   public: {
     Tables: {
+      admin_settings: {
+        Row: {
+          id: string
+          key: string
+          updated_at: string | null
+          updated_by: string | null
+          value: Json
+        }
+        Insert: {
+          id?: string
+          key: string
+          updated_at?: string | null
+          updated_by?: string | null
+          value: Json
+        }
+        Update: {
+          id?: string
+          key?: string
+          updated_at?: string | null
+          updated_by?: string | null
+          value?: Json
+        }
+        Relationships: []
+      }
       batch_operations: {
         Row: {
           client_ref: string | null
@@ -69,6 +93,7 @@ export type Database = {
           event_id: string
           id: string
           medal_id: string
+          min_score_for_raffle: number | null
           total_amount: number
           updated_at: string
           verified: boolean
@@ -82,6 +107,7 @@ export type Database = {
           event_id: string
           id?: string
           medal_id: string
+          min_score_for_raffle?: number | null
           total_amount: number
           updated_at?: string
           verified?: boolean
@@ -95,6 +121,7 @@ export type Database = {
           event_id?: string
           id?: string
           medal_id?: string
+          min_score_for_raffle?: number | null
           total_amount?: number
           updated_at?: string
           verified?: boolean
@@ -261,6 +288,76 @@ export type Database = {
           value?: number
         }
         Relationships: []
+      }
+      ocr_rows: {
+        Row: {
+          confidence: number | null
+          corrected_value: number | null
+          created_at: string | null
+          event_id: string
+          id: string
+          image_source: string | null
+          is_verified: boolean | null
+          linked_player_id: string | null
+          parsed_name: string
+          parsed_score: number
+          raw_text: string | null
+          updated_at: string | null
+          upload_id: string | null
+        }
+        Insert: {
+          confidence?: number | null
+          corrected_value?: number | null
+          created_at?: string | null
+          event_id: string
+          id?: string
+          image_source?: string | null
+          is_verified?: boolean | null
+          linked_player_id?: string | null
+          parsed_name: string
+          parsed_score: number
+          raw_text?: string | null
+          updated_at?: string | null
+          upload_id?: string | null
+        }
+        Update: {
+          confidence?: number | null
+          corrected_value?: number | null
+          created_at?: string | null
+          event_id?: string
+          id?: string
+          image_source?: string | null
+          is_verified?: boolean | null
+          linked_player_id?: string | null
+          parsed_name?: string
+          parsed_score?: number
+          raw_text?: string | null
+          updated_at?: string | null
+          upload_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ocr_rows_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ocr_rows_linked_player_id_fkey"
+            columns: ["linked_player_id"]
+            isOneToOne: false
+            referencedRelation: "players"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ocr_rows_upload_id_fkey"
+            columns: ["upload_id"]
+            isOneToOne: false
+            referencedRelation: "ocr_uploads"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       ocr_uploads: {
         Row: {
@@ -429,6 +526,99 @@ export type Database = {
           },
         ]
       }
+      raffle_entries_history: {
+        Row: {
+          created_at: string | null
+          created_by: string | null
+          entries_after: number
+          entries_before: number
+          event_id: string
+          id: string
+          player_id: string
+          reason: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          created_by?: string | null
+          entries_after: number
+          entries_before: number
+          event_id: string
+          id?: string
+          player_id: string
+          reason?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          created_by?: string | null
+          entries_after?: number
+          entries_before?: number
+          event_id?: string
+          id?: string
+          player_id?: string
+          reason?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "raffle_entries_history_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raffle_entries_history_player_id_fkey"
+            columns: ["player_id"]
+            isOneToOne: false
+            referencedRelation: "players"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      raffle_weights: {
+        Row: {
+          entries_before: number | null
+          entries_next: number | null
+          event_id: string
+          id: string
+          last_updated: string | null
+          player_id: string
+          updated_by: string | null
+        }
+        Insert: {
+          entries_before?: number | null
+          entries_next?: number | null
+          event_id: string
+          id?: string
+          last_updated?: string | null
+          player_id: string
+          updated_by?: string | null
+        }
+        Update: {
+          entries_before?: number | null
+          entries_next?: number | null
+          event_id?: string
+          id?: string
+          last_updated?: string | null
+          player_id?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "raffle_weights_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "raffle_weights_player_id_fkey"
+            columns: ["player_id"]
+            isOneToOne: false
+            referencedRelation: "players"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       raffles: {
         Row: {
           created_at: string
@@ -498,6 +688,7 @@ export type Database = {
           notes: string | null
           player_id: string
           rank: number | null
+          raw_score: number | null
           score: number
           updated_at: string
           verified: boolean
@@ -510,6 +701,7 @@ export type Database = {
           notes?: string | null
           player_id: string
           rank?: number | null
+          raw_score?: number | null
           score: number
           updated_at?: string
           verified?: boolean
@@ -522,6 +714,7 @@ export type Database = {
           notes?: string | null
           player_id?: string
           rank?: number | null
+          raw_score?: number | null
           score?: number
           updated_at?: string
           verified?: boolean

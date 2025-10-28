@@ -4,8 +4,9 @@ import { useAuth } from "@/hooks/useAuth";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import Layout from "@/components/Layout";
-import OCRUpload from "@/components/scores/OCRUpload";
-import ScoreReview from "@/components/scores/ScoreReview";
+import MultiFileOCRUpload from "@/components/scores/MultiFileOCRUpload";
+import EnhancedScoreReview from "@/components/scores/EnhancedScoreReview";
+import RaffleReweightButton from "@/components/scores/RaffleReweightButton";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -98,6 +99,11 @@ const EventScores = () => {
                 </CardDescription>
               </div>
               <div className="flex gap-2">
+                <RaffleReweightButton
+                  eventId={eventId!}
+                  eventName={event?.name || "Event"}
+                  canManage={canManage}
+                />
                 <ExportButtons
                   onDiscordExport={() => {
                     const scores = scoresQuery.data || [];
@@ -128,14 +134,14 @@ const EventScores = () => {
                 <TabsTrigger value="review">Review & Import</TabsTrigger>
               </TabsList>
               <TabsContent value="upload" className="mt-6">
-                <OCRUpload
+                <MultiFileOCRUpload
                   eventId={eventId!}
                   onComplete={handleOCRComplete}
                   canManage={canManage}
                 />
               </TabsContent>
               <TabsContent value="review" className="mt-6">
-                <ScoreReview
+                <EnhancedScoreReview
                   eventId={eventId!}
                   parsedScores={parsedScores}
                   canManage={canManage}
