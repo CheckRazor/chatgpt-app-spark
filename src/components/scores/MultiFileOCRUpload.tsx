@@ -1,22 +1,33 @@
-import { useState, useCallback } from "react";
-import { createWorker } from "tesseract.js";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { UploadCloud, ScanText, X, CheckCircle, AlertCircle } from "lucide-react";
+import { UploadCloud, ScanText, X, CheckCircle, AlertCircle, Settings2 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { parseScoresFromText, preprocessImage } from "@/lib/ocrProcessing";
+import { correctNumericOCR } from "@/lib/ocrProcessing";
 import { Badge } from "@/components/ui/badge";
+import { preprocessImageFile } from "@/lib/ocrPreprocess";
+import { processTwoPassOCR, terminateSharedWorker, TwoPassResult } from "@/lib/ocrTwoPass";
+import { Label } from "@/components/ui/label";
+import { Slider } from "@/components/ui/slider";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 interface FileUploadStatus {
   file: File;
   preview: string;
   status: 'pending' | 'processing' | 'success' | 'error';
   progress: number;
-  extractedText?: string;
+  extractedRows?: TwoPassResult[];
   error?: string;
   uploadId?: string;
+  metadata?: {
+    originalWidth: number;
+    originalHeight: number;
+    processedWidth: number;
+    processedHeight: number;
+    scaleFactor: number;
+  };
 }
 
 interface MultiFileOCRUploadProps {
@@ -28,7 +39,41 @@ interface MultiFileOCRUploadProps {
 const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUploadProps) => {
   const [files, setFiles] = useState<FileUploadStatus[]>([]);
   const [autoCorrect, setAutoCorrect] = useState(true);
-  const [strictMode, setStrictMode] = useState(true);
+  const [scaleOverride, setScaleOverride] = useState<number | undefined>(undefined);
+  const [splitRatio, setSplitRatio] = useState(0.70);
+  const [aggressiveThreshold, setAggressiveThreshold] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Load settings from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('ocr-settings');
+    if (saved) {
+      try {
+        const settings = JSON.parse(saved);
+        if (settings.scaleOverride) setScaleOverride(settings.scaleOverride);
+        if (settings.splitRatio) setSplitRatio(settings.splitRatio);
+        if (settings.aggressiveThreshold !== undefined) setAggressiveThreshold(settings.aggressiveThreshold);
+      } catch (e) {
+        console.error('Failed to load OCR settings', e);
+      }
+    }
+  }, []);
+
+  // Save settings to localStorage
+  useEffect(() => {
+    localStorage.setItem('ocr-settings', JSON.stringify({
+      scaleOverride,
+      splitRatio,
+      aggressiveThreshold,
+    }));
+  }, [scaleOverride, splitRatio, aggressiveThreshold]);
+
+  // Cleanup worker on unmount
+  useEffect(() => {
+    return () => {
+      terminateSharedWorker();
+    };
+  }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files || []);
@@ -62,35 +107,39 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
 
-      // Preprocess image
-      const preprocessedImage = await preprocessImage(fileStatus.file);
+      // Preprocess image at original resolution
+      const preprocessed = await preprocessImageFile(
+        fileStatus.file,
+        scaleOverride,
+        aggressiveThreshold
+      );
 
-      // Create Tesseract worker
-      const worker = await createWorker('eng', 1, {
-        logger: (m) => {
-          if (m.status === 'recognizing text') {
-            setFiles(prev => prev.map((f, i) => 
-              i === index ? { ...f, progress: Math.round(m.progress * 100) } : f
-            ));
-          }
-        },
-      });
+      // Two-pass OCR with row segmentation
+      const rows = await processTwoPassOCR(
+        preprocessed.canvas,
+        splitRatio,
+        (current, total) => {
+          const progress = Math.round((current / total) * 100);
+          setFiles(prev => prev.map((f, i) => 
+            i === index ? { ...f, progress } : f
+          ));
+        }
+      );
 
-      // Configure Tesseract for numeric data
-      await worker.setParameters({
-        tessedit_char_whitelist: '0123456789,. abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
-        preserve_interword_spaces: '1',
-      });
+      if (rows.length === 0) {
+        toast.error(`OCR returned no rows for ${fileStatus.file.name} — try adjusting zoom or re-upload`);
+        throw new Error('No rows detected');
+      }
 
-      const { data: { text } } = await worker.recognize(preprocessedImage);
-      await worker.terminate();
+      // Format results for upload
+      const formattedText = rows.map(r => `${r.name} ${r.score}`).join('\n');
 
       // Save to ocr_uploads
       const { data: upload, error: uploadError } = await supabase
         .from('ocr_uploads')
         .insert({
           event_id: eventId,
-          original_text: text,
+          original_text: formattedText,
           status: 'completed',
           uploaded_by: user.id,
         })
@@ -104,8 +153,15 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
           ...f, 
           status: 'success', 
           progress: 100, 
-          extractedText: text,
-          uploadId: upload.id 
+          extractedRows: rows,
+          uploadId: upload.id,
+          metadata: {
+            originalWidth: preprocessed.originalWidth,
+            originalHeight: preprocessed.originalHeight,
+            processedWidth: preprocessed.processedWidth,
+            processedHeight: preprocessed.processedHeight,
+            scaleFactor: preprocessed.scaleFactor,
+          }
         } : f
       ));
 
@@ -132,23 +188,42 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
     const allScores: any[] = [];
     
     files.forEach(fileStatus => {
-      if (fileStatus.extractedText && fileStatus.status === 'success') {
-        const parsed = parseScoresFromText(
-          fileStatus.extractedText, 
-          fileStatus.file.name,
-          autoCorrect,
-          strictMode
-        );
-        
-        parsed.forEach(score => {
+      if (fileStatus.extractedRows && fileStatus.status === 'success') {
+        fileStatus.extractedRows.forEach(row => {
+          // Apply numeric correction
+          const scoreCorrection = autoCorrect 
+            ? correctNumericOCR(row.score)
+            : { value: parseInt(row.score.replace(/,/g, ''), 10) || 0, corrected: false, confidence: 0.9, rawText: row.score };
+
+          // Calculate overall confidence
+          const overallConfidence = (row.nameConfidence + row.scoreConfidence) / 2 * scoreCorrection.confidence;
+
           allScores.push({
-            ...score,
+            parsedName: row.name,
+            parsedScore: scoreCorrection.value,
+            rawText: `${row.name} ${row.score}`,
+            correctedValue: scoreCorrection.corrected ? scoreCorrection.value : null,
+            confidence: overallConfidence,
+            originalLine: `${row.name} ${row.score}`,
             imageSource: fileStatus.file.name,
             uploadId: fileStatus.uploadId,
+            metadata: {
+              nameConfidence: row.nameConfidence,
+              scoreConfidence: row.scoreConfidence,
+              rawScoreText: scoreCorrection.rawText,
+              nameCanvas: row.nameCanvas,
+              scoreCanvas: row.scoreCanvas,
+              ...fileStatus.metadata,
+            }
           });
         });
       }
     });
+
+    if (allScores.length === 0) {
+      toast.error("No scores extracted");
+      return;
+    }
 
     toast.success(`✅ ${allScores.length} scores extracted from ${files.filter(f => f.status === 'success').length} files`);
     onComplete(allScores);
@@ -174,16 +249,7 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
             <label htmlFor="multi-file-upload" className="text-sm font-medium">
               Upload Score Sheet Images (Multiple)
             </label>
-            <div className="flex gap-4">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={strictMode}
-                  onChange={(e) => setStrictMode(e.target.checked)}
-                  className="rounded"
-                />
-                Strict Name/Score Mode
-              </label>
+            <div className="flex gap-4 items-center">
               <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
@@ -193,8 +259,54 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
                 />
                 Auto-Correct Numeric OCR
               </label>
+              <Collapsible open={showAdvanced} onOpenChange={setShowAdvanced}>
+                <CollapsibleTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    <Settings2 className="h-4 w-4 mr-2" />
+                    Advanced
+                  </Button>
+                </CollapsibleTrigger>
+              </Collapsible>
             </div>
           </div>
+
+          <Collapsible open={showAdvanced}>
+            <CollapsibleContent className="space-y-4 border rounded-lg p-4 bg-muted/50">
+              <div className="space-y-2">
+                <Label className="text-sm">Scale Override: {scaleOverride ? `${scaleOverride.toFixed(1)}×` : 'Auto'}</Label>
+                <Slider
+                  value={[scaleOverride || 1.0]}
+                  onValueChange={([v]) => setScaleOverride(v === 1.0 ? undefined : v)}
+                  min={1.0}
+                  max={3.0}
+                  step={0.1}
+                  className="w-full"
+                />
+              </div>
+              
+              <div className="space-y-2">
+                <Label className="text-sm">Name/Score Split: {(splitRatio * 100).toFixed(0)}%</Label>
+                <Slider
+                  value={[splitRatio]}
+                  onValueChange={([v]) => setSplitRatio(v)}
+                  min={0.6}
+                  max={0.8}
+                  step={0.05}
+                  className="w-full"
+                />
+              </div>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={aggressiveThreshold}
+                  onChange={(e) => setAggressiveThreshold(e.target.checked)}
+                  className="rounded"
+                />
+                Aggressive Threshold (for low contrast)
+              </label>
+            </CollapsibleContent>
+          </Collapsible>
           
           <div className="border-2 border-dashed rounded-lg p-8 text-center hover:border-primary/50 transition-colors">
             <input
@@ -236,9 +348,16 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
                       className="w-full h-32 object-cover rounded mb-2"
                     />
                     
-                    <p className="text-xs font-medium truncate mb-2">
+                    <p className="text-xs font-medium truncate mb-1">
                       {fileStatus.file.name}
                     </p>
+                    
+                    {fileStatus.metadata && (
+                      <p className="text-xs text-muted-foreground">
+                        {fileStatus.metadata.originalWidth}×{fileStatus.metadata.originalHeight}px 
+                        (scale {fileStatus.metadata.scaleFactor.toFixed(2)}×)
+                      </p>
+                    )}
                     
                     {fileStatus.status === 'processing' && (
                       <Progress value={fileStatus.progress} className="h-2" />

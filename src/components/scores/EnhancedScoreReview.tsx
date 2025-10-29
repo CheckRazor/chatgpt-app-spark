@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle, X, Search, AlertTriangle, Trash2, GitMerge, Plus, Edit3 } from "lucide-react";
+import { CheckCircle, X, Search, AlertTriangle, Trash2, GitMerge, Plus, ChevronDown, ChevronUp } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { getConfidenceColor, getConfidenceBadgeVariant } from "@/lib/ocrProcessing";
@@ -18,6 +18,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 interface Player {
   id: string;
@@ -38,6 +39,18 @@ interface ScoreRow {
   linkedPlayerId?: string;
   isVerified: boolean;
   scoreError?: string;
+  metadata?: {
+    nameConfidence?: number;
+    scoreConfidence?: number;
+    rawScoreText?: string;
+    nameCanvas?: HTMLCanvasElement;
+    scoreCanvas?: HTMLCanvasElement;
+    originalWidth?: number;
+    originalHeight?: number;
+    processedWidth?: number;
+    processedHeight?: number;
+    scaleFactor?: number;
+  };
 }
 
 interface EnhancedScoreReviewProps {
@@ -52,6 +65,7 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
   const [searchTerm, setSearchTerm] = useState("");
   const [showCommitDialog, setShowCommitDialog] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
   useEffect(() => {
     fetchPlayers();
@@ -373,94 +387,164 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
           </TableHeader>
           <TableBody>
             {filteredScores.map((score, index) => (
-              <TableRow 
-                key={index} 
-                className={`${score.isVerified ? 'bg-muted/50' : ''} ${getConfidenceColor(score.confidence)} border-l-4`}
-              >
-                <TableCell className="font-medium">
-                  <Input
-                    type="text"
-                    value={score.parsedName}
-                    onChange={(e) => handleNameChange(index, e.target.value)}
-                    className="w-full"
-                    placeholder="Player name"
-                  />
-                </TableCell>
-                <TableCell>
-                  <div className="space-y-1">
+              <>
+                <TableRow 
+                  key={index} 
+                  className={`${score.isVerified ? 'bg-muted/50' : ''} ${getConfidenceColor(score.confidence)} border-l-4`}
+                >
+                  <TableCell className="font-medium">
                     <Input
                       type="text"
-                      value={score.parsedScore.toLocaleString()}
-                      onChange={(e) => handleScoreChange(index, e.target.value)}
-                      className={`w-32 ${score.scoreError ? 'border-red-500' : ''}`}
-                      placeholder="0"
+                      value={score.parsedName}
+                      onChange={(e) => handleNameChange(index, e.target.value)}
+                      className="w-full"
+                      placeholder="Player name"
                     />
-                    {score.scoreError && (
-                      <p className="text-xs text-red-500">{score.scoreError}</p>
-                    )}
-                    {score.correctedValue && (
-                      <Badge variant="outline" className="text-xs">
-                        Auto-corrected
-                      </Badge>
-                    )}
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <Badge variant={getConfidenceBadgeVariant(score.confidence)}>
-                    {(score.confidence * 100).toFixed(0)}%
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <Select
-                    value={score.linkedPlayerId || ""}
-                    onValueChange={(value) => handlePlayerSelect(index, value)}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Select player" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {players.map((player) => (
-                        <SelectItem key={player.id} value={player.id}>
-                          {player.canonical_name} {player.is_alt && "(Alt)"}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground">
-                  {score.imageSource}
-                </TableCell>
-                <TableCell className="text-right">
-                  {score.isVerified ? (
-                    <Badge variant="default">Verified</Badge>
-                  ) : (
-                    <Badge variant="outline">Pending</Badge>
-                  )}
-                </TableCell>
-                <TableCell className="text-right">
-                  <div className="flex gap-1 justify-end">
-                    <Button
-                      variant={score.isVerified ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => handleVerify(index)}
-                      disabled={!score.linkedPlayerId}
-                    >
-                      {score.isVerified ? (
-                        <CheckCircle className="h-4 w-4" />
-                      ) : (
-                        <X className="h-4 w-4" />
+                  </TableCell>
+                  <TableCell>
+                    <div className="space-y-1">
+                      <Input
+                        type="text"
+                        value={score.parsedScore.toLocaleString()}
+                        onChange={(e) => handleScoreChange(index, e.target.value)}
+                        className={`w-32 ${score.scoreError ? 'border-red-500' : ''}`}
+                        placeholder="0"
+                      />
+                      {score.scoreError && (
+                        <p className="text-xs text-red-500">{score.scoreError}</p>
                       )}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDeleteRow(index)}
+                      {score.correctedValue && (
+                        <Badge variant="outline" className="text-xs">
+                          Auto-corrected
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="space-y-1">
+                      <Badge variant={getConfidenceBadgeVariant(score.confidence)}>
+                        {(score.confidence * 100).toFixed(0)}%
+                      </Badge>
+                      {score.metadata && (
+                        <div className="text-xs text-muted-foreground">
+                          <div>Name: {(score.metadata.nameConfidence! * 100).toFixed(0)}%</div>
+                          <div>Score: {(score.metadata.scoreConfidence! * 100).toFixed(0)}%</div>
+                        </div>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Select
+                      value={score.linkedPlayerId || ""}
+                      onValueChange={(value) => handlePlayerSelect(index, value)}
                     >
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select player" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {players.map((player) => (
+                          <SelectItem key={player.id} value={player.id}>
+                            {player.canonical_name} {player.is_alt && "(Alt)"}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    <div>{score.imageSource}</div>
+                    {score.metadata && (
+                      <div className="mt-1">
+                        {score.metadata.originalWidth}×{score.metadata.originalHeight}px
+                        {' '}(scale {score.metadata.scaleFactor?.toFixed(2)}×)
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {score.isVerified ? (
+                      <Badge variant="default">Verified</Badge>
+                    ) : (
+                      <Badge variant="outline">Pending</Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex gap-1 justify-end">
+                      {score.metadata?.nameCanvas && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setExpandedRow(expandedRow === index ? null : index)}
+                        >
+                          {expandedRow === index ? (
+                            <ChevronUp className="h-4 w-4" />
+                          ) : (
+                            <ChevronDown className="h-4 w-4" />
+                          )}
+                        </Button>
+                      )}
+                      <Button
+                        variant={score.isVerified ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => handleVerify(index)}
+                        disabled={!score.linkedPlayerId}
+                      >
+                        {score.isVerified ? (
+                          <CheckCircle className="h-4 w-4" />
+                        ) : (
+                          <X className="h-4 w-4" />
+                        )}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeleteRow(index)}
+                      >
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+                
+                {expandedRow === index && score.metadata?.nameCanvas && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="bg-muted/30">
+                      <div className="p-4 space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <div className="text-sm font-medium mb-2">Name Region</div>
+                            <img 
+                              src={score.metadata.nameCanvas.toDataURL()} 
+                              alt="Name OCR region"
+                              className="border rounded"
+                            />
+                            <div className="text-xs text-muted-foreground mt-1">
+                              Confidence: {(score.metadata.nameConfidence! * 100).toFixed(1)}%
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-sm font-medium mb-2">Score Region</div>
+                            <img 
+                              src={score.metadata.scoreCanvas!.toDataURL()} 
+                              alt="Score OCR region"
+                              className="border rounded"
+                            />
+                            <div className="text-xs text-muted-foreground mt-1">
+                              Confidence: {(score.metadata.scoreConfidence! * 100).toFixed(1)}%
+                              {score.metadata.rawScoreText && (
+                                <> • Raw: {score.metadata.rawScoreText}</>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          <div>Original: {score.metadata.originalWidth}×{score.metadata.originalHeight}px</div>
+                          <div>Processed: {score.metadata.processedWidth}×{score.metadata.processedHeight}px</div>
+                          <div>Scale: {score.metadata.scaleFactor?.toFixed(2)}×</div>
+                        </div>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </>
             ))}
           </TableBody>
         </Table>

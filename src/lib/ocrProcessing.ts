@@ -53,26 +53,33 @@ export const preprocessImage = async (file: File): Promise<string> => {
 /**
  * Auto-correct common OCR mistakes in numeric values
  */
-export const correctNumericOCR = (text: string): { value: number; corrected: boolean; confidence: number } => {
+export const correctNumericOCR = (text: string): { value: number; corrected: boolean; confidence: number; rawText: string } => {
   let corrected = false;
   let workingText = text.trim();
+  const originalText = workingText;
   
-  // Replace common character mistakes
-  workingText = workingText.replace(/O/g, '0'); // O -> 0
-  workingText = workingText.replace(/S/g, '5'); // S -> 5
-  workingText = workingText.replace(/I/g, '1'); // I -> 1
-  workingText = workingText.replace(/l/g, '1'); // l -> 1
+  // Replace common character mistakes when surrounded by digits
+  workingText = workingText.replace(/(\d)O(\d)/g, '$10$2'); // O -> 0
+  workingText = workingText.replace(/(\d)S(\d)/g, '$15$2'); // S -> 5
+  workingText = workingText.replace(/(\d)I(\d)/g, '$11$2'); // I -> 1
+  workingText = workingText.replace(/(\d)l(\d)/g, '$11$2'); // l -> 1
   
-  if (workingText !== text.trim()) corrected = true;
+  if (workingText !== originalText) corrected = true;
   
-  // Remove spaces and normalize commas
+  // Remove spaces
   workingText = workingText.replace(/\s/g, '');
   
   // Fix malformed comma patterns (e.g., "2,5,00" -> "25,000")
   const malformedComma = /(\d),(\d),(\d{2,})/.exec(workingText);
   if (malformedComma) {
     workingText = workingText.replace(/,/g, '');
-    workingText = workingText.slice(0, -3) + ',' + workingText.slice(-3);
+    // Reformat with proper comma grouping
+    const digits = workingText;
+    const groups = [];
+    for (let i = digits.length; i > 0; i -= 3) {
+      groups.unshift(digits.slice(Math.max(0, i - 3), i));
+    }
+    workingText = groups.join(',');
     corrected = true;
   }
   
@@ -101,12 +108,13 @@ export const correctNumericOCR = (text: string): { value: number; corrected: boo
   
   // Additional confidence adjustment based on value reasonableness
   if (numericValue < 100) confidence *= 0.7; // Very low scores are suspect
-  if (numericValue > 1000000) confidence *= 0.6; // Very high scores are suspect
+  if (numericValue > 1000000000) confidence *= 0.5; // Very high scores are suspect
   
   return {
     value: isNaN(numericValue) ? 0 : numericValue,
     corrected,
-    confidence: Math.max(0, Math.min(1, confidence))
+    confidence: Math.max(0, Math.min(1, confidence)),
+    rawText: originalText,
   };
 };
 
