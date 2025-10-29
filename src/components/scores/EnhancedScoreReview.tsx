@@ -37,6 +37,7 @@ interface ScoreRow {
   uploadId?: string;
   linkedPlayerId?: string;
   isVerified: boolean;
+  scoreError?: string;
 }
 
 interface EnhancedScoreReviewProps {
@@ -124,10 +125,19 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
   };
 
   const handleScoreChange = (index: number, value: string) => {
+    // Validate format: should match /^\d{1,3}(,\d{3})*$/
+    const isValid = /^\d{1,3}(,\d{3})*$/.test(value.trim()) || value.trim() === '';
+    
     // Remove commas and parse
     const numericValue = value.replace(/,/g, '');
+    const parsedNum = parseInt(numericValue) || 0;
+    
     setScores(prev => prev.map((s, i) => 
-      i === index ? { ...s, parsedScore: parseInt(numericValue) || 0 } : s
+      i === index ? { 
+        ...s, 
+        parsedScore: parsedNum,
+        scoreError: !isValid && value.trim() ? 'Invalid number format' : undefined
+      } : s
     ));
   };
 
@@ -190,17 +200,58 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
       return;
     }
 
+    // Check for any score errors
+    const hasErrors = scores.some(s => s.scoreError);
+    if (hasErrors) {
+      toast.error("⚠️ Fix invalid scores before committing");
+      return;
+    }
+
     setLoading(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
 
-      // Group by player, keep highest score
+      // Fetch all players to resolve alts to mains
+      const { data: allPlayers, error: playersError } = await supabase
+        .from('players')
+        .select('id, is_alt, main_player_id')
+        .is('deleted_at', null);
+
+      if (playersError) throw playersError;
+
+      const playerMap = new Map(allPlayers?.map(p => [p.id, p]) || []);
+
+      // Resolve alts to mains and group by player, keep highest score
       const playerScores = new Map<string, number>();
+      let skippedCount = 0;
+
       verifiedScores.forEach(s => {
-        const current = playerScores.get(s.linkedPlayerId!) || 0;
-        playerScores.set(s.linkedPlayerId!, Math.max(current, s.parsedScore));
+        if (!s.linkedPlayerId) {
+          skippedCount++;
+          return;
+        }
+
+        const player = playerMap.get(s.linkedPlayerId);
+        if (!player) {
+          skippedCount++;
+          return;
+        }
+
+        // Resolve to main if this is an alt
+        const finalPlayerId = player.is_alt && player.main_player_id 
+          ? player.main_player_id 
+          : s.linkedPlayerId;
+
+        const current = playerScores.get(finalPlayerId) || 0;
+        playerScores.set(finalPlayerId, Math.max(current, s.parsedScore));
       });
+
+      if (playerScores.size === 0) {
+        toast.error("⚠️ No valid scores to commit after validation");
+        setLoading(false);
+        return;
+      }
 
       // Create batch operation
       const { data: batchOp, error: batchError } = await supabase
@@ -232,8 +283,7 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
 
       if (scoresError) throw scoresError;
 
-      const skipped = verifiedScores.length - playerScores.size;
-      toast.success(`✅ ${playerScores.size} scores committed.${skipped > 0 ? ` ⚠️ ${skipped} duplicates merged.` : ''}`);
+      toast.success(`✅ Committed ${playerScores.size} players.${skippedCount > 0 ? ` ⚠️ Skipped ${skippedCount} invalid rows.` : ''}`);
       
       setScores([]);
       setShowCommitDialog(false);
@@ -269,6 +319,8 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
 
   const verifiedCount = scores.filter(s => s.isVerified).length;
   const highConfidenceCount = scores.filter(s => s.confidence >= 0.95 && s.linkedPlayerId && !s.isVerified).length;
+  const hasErrors = scores.some(s => s.scoreError);
+  const allVerifiedAndLinked = scores.every(s => s.isVerified && s.linkedPlayerId);
 
   return (
     <div className="space-y-4">
@@ -335,18 +387,23 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
                   />
                 </TableCell>
                 <TableCell>
-                  <Input
-                    type="text"
-                    value={score.parsedScore.toLocaleString()}
-                    onChange={(e) => handleScoreChange(index, e.target.value)}
-                    className="w-32"
-                    placeholder="0"
-                  />
-                  {score.correctedValue && (
-                    <Badge variant="outline" className="mt-1 text-xs">
-                      Auto-corrected
-                    </Badge>
-                  )}
+                  <div className="space-y-1">
+                    <Input
+                      type="text"
+                      value={score.parsedScore.toLocaleString()}
+                      onChange={(e) => handleScoreChange(index, e.target.value)}
+                      className={`w-32 ${score.scoreError ? 'border-red-500' : ''}`}
+                      placeholder="0"
+                    />
+                    {score.scoreError && (
+                      <p className="text-xs text-red-500">{score.scoreError}</p>
+                    )}
+                    {score.correctedValue && (
+                      <Badge variant="outline" className="text-xs">
+                        Auto-corrected
+                      </Badge>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell>
                   <Badge variant={getConfidenceBadgeVariant(score.confidence)}>
@@ -415,7 +472,7 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
         </div>
         <Button
           onClick={() => setShowCommitDialog(true)}
-          disabled={verifiedCount === 0 || loading}
+          disabled={verifiedCount === 0 || loading || hasErrors || !allVerifiedAndLinked}
           size="lg"
         >
           <CheckCircle className="mr-2 h-4 w-4" />
