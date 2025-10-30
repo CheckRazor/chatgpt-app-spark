@@ -1,8 +1,16 @@
 /**
  * Two-Pass OCR: Row Segmentation + Name/Score Split
+ *
+ * Now wired to normalized parsing from ocrProcessing.ts so we get:
+ * - cleaned player names
+ * - BIGINT-safe scores
+ * - per-row confidence
  */
 
-import { createWorker, Worker } from 'tesseract.js';
+import { createWorker, Worker } from "tesseract.js";
+import {
+  correctNumericOCR,
+} from "./ocrProcessing"; // <-- we just updated this file
 
 export interface RowSegment {
   y: number;
@@ -11,12 +19,19 @@ export interface RowSegment {
 }
 
 export interface TwoPassResult {
+  // raw from tesseract per row
   name: string;
   score: string;
   nameConfidence: number;
   scoreConfidence: number;
   nameCanvas: HTMLCanvasElement;
   scoreCanvas: HTMLCanvasElement;
+
+  // normalized / app-friendly
+  parsedName?: string;
+  parsedScore?: number;
+  bigScore?: string;
+  combinedConfidence?: number;
 }
 
 let sharedWorker: Worker | null = null;
@@ -26,7 +41,8 @@ let sharedWorker: Worker | null = null;
  */
 export const getSharedWorker = async (): Promise<Worker> => {
   if (!sharedWorker) {
-    sharedWorker = await createWorker('eng', 1);
+    // 'eng', 1 = default engine
+    sharedWorker = await createWorker("eng", 1);
   }
   return sharedWorker;
 };
@@ -44,20 +60,27 @@ export const terminateSharedWorker = async (): Promise<void> => {
 /**
  * Smooth projection profile
  */
-const smoothProjection = (projection: number[], windowSize: number = 9): number[] => {
+const smoothProjection = (
+  projection: number[],
+  windowSize: number = 9
+): number[] => {
   const smoothed = new Array(projection.length).fill(0);
   const halfWindow = Math.floor(windowSize / 2);
-  
+
   for (let i = 0; i < projection.length; i++) {
     let sum = 0;
     let count = 0;
-    for (let j = Math.max(0, i - halfWindow); j < Math.min(projection.length, i + halfWindow + 1); j++) {
+    for (
+      let j = Math.max(0, i - halfWindow);
+      j < Math.min(projection.length, i + halfWindow + 1);
+      j++
+    ) {
       sum += projection[j];
       count++;
     }
     smoothed[i] = sum / count;
   }
-  
+
   return smoothed;
 };
 
@@ -69,15 +92,15 @@ const findValleys = (projection: number[], minGap: number = 6): number[] => {
   const valleys: number[] = [];
   const maxVal = Math.max(...projection);
   const avgVal = projection.reduce((a, b) => a + b, 0) / projection.length;
-  
+
   // Look for peaks (dark lines) rather than valleys
   const threshold = Math.max(avgVal * 1.5, maxVal * 0.3);
-  
+
   let inPeak = false;
   let peakStart = 0;
   let peakMax = 0;
   let peakMaxIdx = 0;
-  
+
   for (let i = 0; i < projection.length; i++) {
     if (projection[i] > threshold && !inPeak) {
       peakStart = i;
@@ -96,7 +119,7 @@ const findValleys = (projection: number[], minGap: number = 6): number[] => {
       }
     }
   }
-  
+
   // Merge close valleys
   const merged: number[] = [];
   for (let i = 0; i < valleys.length; i++) {
@@ -104,54 +127,51 @@ const findValleys = (projection: number[], minGap: number = 6): number[] => {
       merged.push(valleys[i]);
     }
   }
-  
+
   return merged;
 };
 
 /**
  * Segment image into horizontal row bands using robust projection profiling
- * For Plarium leaderboards: detect dark divider lines between rows
  */
 export const segmentRows = (
   canvas: HTMLCanvasElement,
   grayscaleCanvas: HTMLCanvasElement,
   expectedRows?: number
 ): RowSegment[] => {
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
-  
+
   // Calculate horizontal projection (dark pixel count per row)
   const projection = new Array(canvas.height).fill(0);
-  
+
   for (let y = 0; y < canvas.height; y++) {
     for (let x = 0; x < canvas.width; x++) {
       const idx = (y * canvas.width + x) * 4;
-      // Count dark pixels (divider lines are dark)
       const brightness = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
       if (brightness < 100) {
         projection[y]++;
       }
     }
   }
-  
+
   // Smooth projection
   const smoothed = smoothProjection(projection, 9);
-  
+
   // Find valleys
   const valleys = findValleys(smoothed, 6);
-  
+
   // Build segments from valleys (dark divider lines)
   const minHeight = 55;
   const segments: RowSegment[] = [];
-  
+
   if (valleys.length >= 1 && (!expectedRows || valleys.length + 1 === expectedRows)) {
     // Use valleys to define bands
     let prevY = 0;
     for (const valley of valleys) {
       const rowHeight = valley - prevY;
       if (rowHeight >= minHeight) {
-        // Crop top 80% of band to remove bottom noise line
         const cropHeight = Math.floor(rowHeight * 0.8);
         if (cropHeight >= minHeight) {
           segments.push({
@@ -176,12 +196,12 @@ export const segmentRows = (
       }
     }
   }
-  
+
   // Fallback: if no valid segments or count doesn't match expected
   if (segments.length === 0 || (expectedRows && segments.length !== expectedRows)) {
-    const targetRows = expectedRows || 5; // Default to 5 for Plarium screenshots
+    const targetRows = expectedRows || 5; // default
     const sliceHeight = canvas.height / targetRows;
-    
+
     segments.length = 0;
     for (let i = 0; i < targetRows; i++) {
       const idealY = Math.round(i * sliceHeight);
@@ -195,7 +215,7 @@ export const segmentRows = (
           snapY = valley;
         }
       }
-      
+
       const nextIdealY = Math.round((i + 1) * sliceHeight);
       let snapNextY = nextIdealY;
       minDist = 20;
@@ -206,10 +226,9 @@ export const segmentRows = (
           snapNextY = valley;
         }
       }
-      
+
       const rowHeight = snapNextY - snapY;
       if (rowHeight >= minHeight && snapNextY <= canvas.height) {
-        // Crop top 80% of band
         const cropHeight = Math.floor(rowHeight * 0.8);
         if (cropHeight >= minHeight) {
           segments.push({
@@ -221,7 +240,7 @@ export const segmentRows = (
       }
     }
   }
-  
+
   return segments;
 };
 
@@ -235,13 +254,13 @@ const cropCanvas = (
   width: number,
   height: number
 ): HTMLCanvasElement => {
-  const cropped = document.createElement('canvas');
+  const cropped = document.createElement("canvas");
   cropped.width = width;
   cropped.height = height;
-  
-  const ctx = cropped.getContext('2d')!;
+
+  const ctx = cropped.getContext("2d")!;
   ctx.drawImage(source, x, y, width, height, 0, 0, width, height);
-  
+
   return cropped;
 };
 
@@ -250,34 +269,40 @@ const cropCanvas = (
  */
 export const splitNameScore = (
   rowCanvas: HTMLCanvasElement,
-  splitRatio: number = 0.70
+  splitRatio: number = 0.7
 ): { nameCanvas: HTMLCanvasElement; scoreCanvas: HTMLCanvasElement } => {
   const splitX = Math.round(rowCanvas.width * splitRatio);
-  
+
   const nameCanvas = cropCanvas(rowCanvas, 0, 0, splitX, rowCanvas.height);
-  const scoreCanvas = cropCanvas(rowCanvas, splitX, 0, rowCanvas.width - splitX, rowCanvas.height);
-  
+  const scoreCanvas = cropCanvas(
+    rowCanvas,
+    splitX,
+    0,
+    rowCanvas.width - splitX,
+    rowCanvas.height
+  );
+
   return { nameCanvas, scoreCanvas };
 };
 
 /**
  * Run OCR on name region (text mode with punctuation)
- * Uses non-thresholded grayscale to preserve brown text on beige
  */
 export const ocrNameRegion = async (
   canvas: HTMLCanvasElement,
   worker: Worker
 ): Promise<{ text: string; confidence: number }> => {
   await worker.setParameters({
-    preserve_interword_spaces: '1',
-    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .\'-:_†<>/\\',
-    user_defined_dpi: '300',
+    preserve_interword_spaces: "1",
+    tessedit_char_whitelist:
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .'-:_",
+    user_defined_dpi: "300",
   });
-  
+
   const { data } = await worker.recognize(canvas, {
     rotateAuto: false,
   });
-  
+
   return {
     text: data.text.trim(),
     confidence: data.confidence / 100,
@@ -292,15 +317,15 @@ export const ocrScoreRegion = async (
   worker: Worker
 ): Promise<{ text: string; confidence: number }> => {
   await worker.setParameters({
-    tessedit_char_whitelist: '0123456789,.',
-    user_defined_dpi: '300',
-    preserve_interword_spaces: '0',
+    tessedit_char_whitelist: "0123456789,.",
+    user_defined_dpi: "300",
+    preserve_interword_spaces: "0",
   });
-  
+
   const { data } = await worker.recognize(canvas, {
     rotateAuto: false,
   });
-  
+
   return {
     text: data.text.trim(),
     confidence: data.confidence / 100,
@@ -309,19 +334,29 @@ export const ocrScoreRegion = async (
 
 /**
  * Two-pass OCR on a single row
+ * Now returns normalized name + bigint-safe score
  */
 export const twoPassOCRRow = async (
   rowCanvas: HTMLCanvasElement,
   worker: Worker,
-  splitRatio: number = 0.70
+  splitRatio: number = 0.7
 ): Promise<TwoPassResult> => {
   const { nameCanvas, scoreCanvas } = splitNameScore(rowCanvas, splitRatio);
-  
+
   const [nameResult, scoreResult] = await Promise.all([
     ocrNameRegion(nameCanvas, worker),
     ocrScoreRegion(scoreCanvas, worker),
   ]);
-  
+
+  // normalize name (strip leading junk)
+  const cleanedName = nameResult.text.replace(/^[|I1\.\-]+/, "").trim();
+
+  // normalize score using shared util
+  const correction = correctNumericOCR(scoreResult.text);
+  const combinedConfidence =
+    (nameResult.confidence * 0.6 + scoreResult.confidence * 0.4) *
+    correction.confidence;
+
   return {
     name: nameResult.text,
     score: scoreResult.text,
@@ -329,6 +364,11 @@ export const twoPassOCRRow = async (
     scoreConfidence: scoreResult.confidence,
     nameCanvas,
     scoreCanvas,
+
+    parsedName: cleanedName.length >= 2 ? cleanedName : "",
+    parsedScore: correction.value,
+    bigScore: correction.bigValue,
+    combinedConfidence,
   };
 };
 
@@ -338,35 +378,37 @@ export const twoPassOCRRow = async (
 export const processTwoPassOCR = async (
   canvas: HTMLCanvasElement,
   grayscaleCanvas: HTMLCanvasElement,
-  splitRatio: number = 0.70,
+  splitRatio: number = 0.7,
   expectedRows?: number,
   progressCallback?: (current: number, total: number) => void
 ): Promise<TwoPassResult[]> => {
   const worker = await getSharedWorker();
-  
+
   // Segment into rows using both thresholded and grayscale versions
   let segments = segmentRows(canvas, grayscaleCanvas, expectedRows);
-  
-  // Fallback: if no rows found, try simple full-page split
+
+  // Fallback: if no rows found, process entire image as one row
   if (segments.length === 0) {
-    segments = [{
-      y: 0,
-      height: grayscaleCanvas.height,
-      canvas: grayscaleCanvas,
-    }];
+    segments = [
+      {
+        y: 0,
+        height: grayscaleCanvas.height,
+        canvas: grayscaleCanvas,
+      },
+    ];
   }
-  
+
   const results: TwoPassResult[] = [];
-  
+
   for (let i = 0; i < segments.length; i++) {
     try {
       const result = await twoPassOCRRow(segments[i].canvas, worker, splitRatio);
-      
-      // Only include if we got at least a name
-      if (result.name.length > 0) {
+
+      // Only include if we got at least a plausible name
+      if (result.parsedName && result.parsedName.length > 0) {
         results.push(result);
       }
-      
+
       if (progressCallback) {
         progressCallback(i + 1, segments.length);
       }
@@ -374,6 +416,6 @@ export const processTwoPassOCR = async (
       console.error(`Failed to OCR row ${i}:`, error);
     }
   }
-  
+
   return results;
 };

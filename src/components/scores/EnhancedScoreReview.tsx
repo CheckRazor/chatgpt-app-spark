@@ -2,12 +2,38 @@ import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle, X, Search, AlertTriangle, Trash2, GitMerge, Plus, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  CheckCircle,
+  X,
+  Search,
+  AlertTriangle,
+  Trash2,
+  GitMerge,
+  Plus,
+  ChevronDown,
+  ChevronUp,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
-import { getConfidenceColor, getConfidenceBadgeVariant } from "@/lib/ocrProcessing";
+import {
+  getConfidenceColor,
+  getConfidenceBadgeVariant,
+} from "@/lib/ocrProcessing";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,13 +44,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 interface Player {
   id: string;
   canonical_name: string;
   aliases: string[];
   is_alt: boolean;
+  main_player_id?: string | null;
 }
 
 interface ScoreRow {
@@ -39,6 +65,7 @@ interface ScoreRow {
   linkedPlayerId?: string;
   isVerified: boolean;
   scoreError?: string;
+  bigScore?: string; // <-- bigint-safe digits string from OCR
   metadata?: {
     nameConfidence?: number;
     scoreConfidence?: number;
@@ -59,7 +86,11 @@ interface EnhancedScoreReviewProps {
   canManage: boolean;
 }
 
-const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScoreReviewProps) => {
+const EnhancedScoreReview = ({
+  eventId,
+  parsedScores,
+  canManage,
+}: EnhancedScoreReviewProps) => {
   const [players, setPlayers] = useState<Player[]>([]);
   const [scores, setScores] = useState<ScoreRow[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
@@ -73,10 +104,13 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
 
   useEffect(() => {
     if (parsedScores.length > 0) {
-      const mapped = parsedScores.map(s => {
+      const mapped: ScoreRow[] = parsedScores.map((s: any) => {
         const suggestedPlayer = findMatchingPlayer(s.parsedName);
         return {
           ...s,
+          // ensure we always have a number for UI input
+          parsedScore: typeof s.parsedScore === "number" ? s.parsedScore : parseInt(s.bigScore || "0", 10) || 0,
+          bigScore: s.bigScore || s.parsedScore?.toString()?.replace(/[^\d]/g, "") || "0",
           linkedPlayerId: suggestedPlayer?.id,
           isVerified: false,
         };
@@ -89,27 +123,38 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
   const fetchPlayers = async () => {
     const { data } = await supabase
       .from("players")
-      .select("id, canonical_name, aliases, is_alt")
+      .select("id, canonical_name, aliases, is_alt, main_player_id")
       .is("deleted_at", null)
       .order("canonical_name");
 
     if (data) setPlayers(data);
   };
 
+  // save raw OCR rows for audit/debug
   const saveToOCRRows = async (scoreRows: ScoreRow[]) => {
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
     if (!user) return;
 
-    const rows = scoreRows.map(s => {
-      const digitsOnly = s.parsedScore.toString().replace(/[^\d]/g, '');
+    const rows = scoreRows.map((s) => {
+      // prefer bigint-safe digits
+      const digitsOnly =
+        s.bigScore ||
+        s.parsedScore.toString().replace(/[^\d]/g, "") ||
+        "0";
+
       return {
         event_id: eventId,
         upload_id: s.uploadId,
         parsed_name: s.parsedName,
         parsed_score: s.parsedScore,
-        parsed_score_big: parseInt(digitsOnly) || 0,
+        // store bigint as text or numeric in DB
+        parsed_score_big: digitsOnly,
         raw_text: s.rawText,
-        raw_score_text: s.parsedScore.toLocaleString(),
+        raw_score_text: s.bigScore
+          ? s.bigScore.replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+          : s.parsedScore.toLocaleString(),
         corrected_value: s.correctedValue,
         confidence: s.confidence,
         linked_player_id: s.linkedPlayerId,
@@ -118,7 +163,11 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
       };
     });
 
-    await supabase.from('ocr_rows').insert(rows);
+    // we don't want to crash UX if some rows fail
+    const { error } = await supabase.from("ocr_rows").insert(rows);
+    if (error) {
+      console.warn("Failed to save ocr_rows:", error.message);
+    }
   };
 
   const findMatchingPlayer = (name: string) => {
@@ -131,49 +180,67 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
   };
 
   const handlePlayerSelect = (index: number, playerId: string) => {
-    setScores(prev => prev.map((s, i) => 
-      i === index ? { ...s, linkedPlayerId: playerId } : s
-    ));
+    setScores((prev) =>
+      prev.map((s, i) =>
+        i === index ? { ...s, linkedPlayerId: playerId } : s
+      )
+    );
   };
 
   const handleNameChange = (index: number, value: string) => {
-    setScores(prev => prev.map((s, i) => 
-      i === index ? { ...s, parsedName: value } : s
-    ));
+    setScores((prev) =>
+      prev.map((s, i) => (i === index ? { ...s, parsedName: value } : s))
+    );
   };
 
   const handleScoreChange = (index: number, value: string) => {
     // Validate format: should match /^\d{1,3}(,\d{3})*$/
-    const isValid = /^\d{1,3}(,\d{3})*$/.test(value.trim()) || value.trim() === '';
-    
+    const isValid =
+      /^\d{1,3}(,\d{3})*$/.test(value.trim()) || value.trim() === "";
+
     // Remove commas and parse
-    const numericValue = value.replace(/,/g, '');
+    const numericValue = value.replace(/,/g, "");
     const parsedNum = parseInt(numericValue) || 0;
-    
-    setScores(prev => prev.map((s, i) => 
-      i === index ? { 
-        ...s, 
-        parsedScore: parsedNum,
-        scoreError: !isValid && value.trim() ? 'Invalid number format' : undefined
-      } : s
-    ));
+
+    setScores((prev) =>
+      prev.map((s, i) =>
+        i === index
+          ? {
+              ...s,
+              parsedScore: parsedNum,
+              // keep bigint version in sync
+              bigScore: numericValue || "0",
+              scoreError:
+                !isValid && value.trim()
+                  ? "Invalid number format"
+                  : undefined,
+            }
+          : s
+      )
+    );
   };
 
   const handleVerify = (index: number) => {
-    setScores(prev => prev.map((s, i) => 
-      i === index ? { ...s, isVerified: !s.isVerified } : s
-    ));
+    setScores((prev) =>
+      prev.map((s, i) =>
+        i === index ? { ...s, isVerified: !s.isVerified } : s
+      )
+    );
   };
 
   const bulkApproveHighConfidence = () => {
-    setScores(prev => prev.map(s => 
-      s.confidence >= 0.95 && s.linkedPlayerId ? { ...s, isVerified: true } : s
-    ));
+    setScores((prev) =>
+      prev.map((s) =>
+        s.confidence >= 0.95 && s.linkedPlayerId
+          ? { ...s, isVerified: true }
+          : s
+      )
+    );
     toast.success("✅ High confidence scores approved");
   };
 
   const handleDeleteRow = (index: number) => {
-    setScores(prev => prev.filter((_, i) => i !== index));
+    setScores((prev) => prev.filter((_, i) => i !== index));
     toast.success("Row deleted");
   };
 
@@ -181,45 +248,57 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
     const newRow: ScoreRow = {
       parsedName: "",
       parsedScore: 0,
+      bigScore: "0",
       rawText: "Manual entry",
       correctedValue: null,
       confidence: 1.0,
       imageSource: "Manual",
       isVerified: false,
     };
-    setScores(prev => [...prev, newRow]);
+    setScores((prev) => [...prev, newRow]);
   };
 
   const handleMergeDuplicates = () => {
     const playerMap = new Map<string, ScoreRow>();
-    
-    scores.forEach(score => {
+
+    scores.forEach((score) => {
       if (!score.linkedPlayerId) return;
-      
+
       const existing = playerMap.get(score.linkedPlayerId);
-      if (!existing || score.parsedScore > existing.parsedScore) {
+      const currentBig = BigInt(score.bigScore || "0");
+
+      if (!existing) {
         playerMap.set(score.linkedPlayerId, score);
+      } else {
+        const existingBig = BigInt(existing.bigScore || "0");
+        if (currentBig > existingBig) {
+          playerMap.set(score.linkedPlayerId, score);
+        }
       }
     });
-    
+
     const uniqueScores = Array.from(playerMap.values());
     const removedCount = scores.length - uniqueScores.length;
-    
+
     setScores(uniqueScores);
-    toast.success(`🔀 ${removedCount} duplicates merged, kept highest scores`);
+    toast.success(
+      `🔀 ${removedCount} duplicates merged, kept highest scores (by bigint)`
+    );
   };
 
   const handleCommitScores = async () => {
     if (!canManage) return;
 
-    const verifiedScores = scores.filter(s => s.isVerified && s.linkedPlayerId);
+    const verifiedScores = scores.filter(
+      (s) => s.isVerified && s.linkedPlayerId
+    );
     if (verifiedScores.length === 0) {
       toast.error("⚠️ No verified scores to commit");
       return;
     }
 
     // Check for any score errors
-    const hasErrors = scores.some(s => s.scoreError);
+    const hasErrors = scores.some((s) => s.scoreError);
     if (hasErrors) {
       toast.error("⚠️ Fix invalid scores before committing");
       return;
@@ -227,24 +306,28 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
 
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
 
       // Fetch all players to resolve alts to mains
       const { data: allPlayers, error: playersError } = await supabase
-        .from('players')
-        .select('id, is_alt, main_player_id')
-        .is('deleted_at', null);
+        .from("players")
+        .select("id, is_alt, main_player_id")
+        .is("deleted_at", null);
 
       if (playersError) throw playersError;
 
-      const playerMap = new Map(allPlayers?.map(p => [p.id, p]) || []);
+      const playerMap = new Map<string, Player>(
+        (allPlayers || []).map((p: any) => [p.id, p])
+      );
 
       // Resolve alts to mains and group by player, keep highest score (BIGINT)
       const playerScores = new Map<string, string>();
       let skippedCount = 0;
 
-      verifiedScores.forEach(s => {
+      verifiedScores.forEach((s) => {
         if (!s.linkedPlayerId) {
           skippedCount++;
           return;
@@ -256,17 +339,20 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
           return;
         }
 
-        // Resolve to main if this is an alt
-        const finalPlayerId = player.is_alt && player.main_player_id 
-          ? player.main_player_id 
-          : s.linkedPlayerId;
+        const finalPlayerId =
+          player.is_alt && player.main_player_id
+            ? player.main_player_id
+            : s.linkedPlayerId;
 
-        const digitsOnly = s.parsedScore.toString().replace(/[^\d]/g, '');
-        const currentBig = BigInt(digitsOnly || '0');
-        const existingBig = BigInt(playerScores.get(finalPlayerId) || '0');
-        
+        const digitsOnly =
+          s.bigScore ||
+          s.parsedScore.toString().replace(/[^\d]/g, "") ||
+          "0";
+        const currentBig = BigInt(digitsOnly);
+        const existingBig = BigInt(playerScores.get(finalPlayerId) || "0");
+
         if (currentBig > existingBig) {
-          playerScores.set(finalPlayerId, digitsOnly || '0');
+          playerScores.set(finalPlayerId, digitsOnly);
         }
       });
 
@@ -278,9 +364,9 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
 
       // Create batch operation
       const { data: batchOp, error: batchError } = await supabase
-        .from('batch_operations')
+        .from("batch_operations")
         .insert({
-          operation_type: 'ocr_import',
+          operation_type: "ocr_import",
           event_id: eventId,
           created_by: user.id,
           metadata: { score_count: playerScores.size },
@@ -290,27 +376,37 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
 
       if (batchError) throw batchError;
 
-      // Upsert scores with BIGINT
-      const scoreData = Array.from(playerScores.entries()).map(([playerId, scoreBig]) => ({
-        event_id: eventId,
-        player_id: playerId,
-        score: parseInt(scoreBig.slice(0, 10)) || 0,
-        raw_score: parseInt(scoreBig) || 0,
-        verified: true,
-        created_by: user.id,
-      }));
+      // Upsert scores with BIGINT-safe strings
+      // NOTE: this assumes your 'scores' table can accept numeric/bigint from strings
+      const scoreData = Array.from(playerScores.entries()).map(
+        ([playerId, scoreBig]) => ({
+          event_id: eventId,
+          player_id: playerId,
+          // send as string, let DB cast
+          score: scoreBig,
+          raw_score: scoreBig,
+          verified: true,
+          created_by: user.id,
+        })
+      );
 
-      const { error: scoresError } = await supabase.from('scores').upsert(scoreData, {
-        onConflict: 'event_id,player_id',
-      });
+      const { error: scoresError } = await supabase
+        .from("scores")
+        .upsert(scoreData, {
+          onConflict: "event_id,player_id",
+        });
 
       if (scoresError) {
         toast.error(`Database error: ${scoresError.message}`);
         throw scoresError;
       }
 
-      toast.success(`✅ Committed ${playerScores.size} players.${skippedCount > 0 ? ` ⚠️ Skipped ${skippedCount} invalid rows.` : ''}`);
-      
+      toast.success(
+        `✅ Committed ${playerScores.size} players.${
+          skippedCount > 0 ? ` ⚠️ Skipped ${skippedCount} invalid rows.` : ""
+        }`
+      );
+
       setScores([]);
       setShowCommitDialog(false);
     } catch (error: any) {
@@ -321,9 +417,10 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
   };
 
   const filteredScores = searchTerm
-    ? scores.filter(s => 
-        s.parsedName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        s.confidence.toString().includes(searchTerm)
+    ? scores.filter(
+        (s) =>
+          s.parsedName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          s.confidence.toString().includes(searchTerm)
       )
     : scores;
 
@@ -343,10 +440,14 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
     );
   }
 
-  const verifiedCount = scores.filter(s => s.isVerified).length;
-  const highConfidenceCount = scores.filter(s => s.confidence >= 0.95 && s.linkedPlayerId && !s.isVerified).length;
-  const hasErrors = scores.some(s => s.scoreError);
-  const allVerifiedAndLinked = scores.every(s => s.isVerified && s.linkedPlayerId);
+  const verifiedCount = scores.filter((s) => s.isVerified).length;
+  const highConfidenceCount = scores.filter(
+    (s) => s.confidence >= 0.95 && s.linkedPlayerId && !s.isVerified
+  ).length;
+  const hasErrors = scores.some((s) => s.scoreError);
+  const allVerifiedAndLinked = scores.every(
+    (s) => s.isVerified && s.linkedPlayerId
+  );
 
   return (
     <div className="space-y-4">
@@ -360,22 +461,22 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
             className="pl-9"
           />
         </div>
-        
+
         <Button variant="outline" size="sm" onClick={handleAddRow}>
           <Plus className="mr-2 h-4 w-4" />
           Add Row
         </Button>
 
-        <Button 
-          variant="outline" 
-          size="sm" 
+        <Button
+          variant="outline"
+          size="sm"
           onClick={handleMergeDuplicates}
-          disabled={scores.filter(s => s.linkedPlayerId).length < 2}
+          disabled={scores.filter((s) => s.linkedPlayerId).length < 2}
         >
           <GitMerge className="mr-2 h-4 w-4" />
           Merge Duplicates
         </Button>
-        
+
         {highConfidenceCount > 0 && (
           <Button variant="outline" size="sm" onClick={bulkApproveHighConfidence}>
             <CheckCircle className="mr-2 h-4 w-4" />
@@ -400,9 +501,11 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
           <TableBody>
             {filteredScores.map((score, index) => (
               <>
-                <TableRow 
-                  key={index} 
-                  className={`${score.isVerified ? 'bg-muted/50' : ''} ${getConfidenceColor(score.confidence)} border-l-4`}
+                <TableRow
+                  key={index}
+                  className={`${score.isVerified ? "bg-muted/50" : ""} ${getConfidenceColor(
+                    score.confidence
+                  )} border-l-4`}
                 >
                   <TableCell className="font-medium">
                     <Input
@@ -417,13 +520,24 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
                     <div className="space-y-1">
                       <Input
                         type="text"
-                        value={score.parsedScore.toLocaleString()}
+                        value={
+                          score.bigScore
+                            ? score.bigScore.replace(
+                                /\B(?=(\d{3})+(?!\d))/g,
+                                ","
+                              )
+                            : score.parsedScore.toLocaleString()
+                        }
                         onChange={(e) => handleScoreChange(index, e.target.value)}
-                        className={`w-32 ${score.scoreError ? 'border-red-500' : ''}`}
+                        className={`w-32 ${
+                          score.scoreError ? "border-red-500" : ""
+                        }`}
                         placeholder="0"
                       />
                       {score.scoreError && (
-                        <p className="text-xs text-red-500">{score.scoreError}</p>
+                        <p className="text-xs text-red-500">
+                          {score.scoreError}
+                        </p>
                       )}
                       {score.correctedValue && (
                         <Badge variant="outline" className="text-xs">
@@ -439,8 +553,14 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
                       </Badge>
                       {score.metadata && (
                         <div className="text-xs text-muted-foreground">
-                          <div>Name: {(score.metadata.nameConfidence! * 100).toFixed(0)}%</div>
-                          <div>Score: {(score.metadata.scoreConfidence! * 100).toFixed(0)}%</div>
+                          <div>
+                            Name:{" "}
+                            {(score.metadata.nameConfidence! * 100).toFixed(0)}%
+                          </div>
+                          <div>
+                            Score:{" "}
+                            {(score.metadata.scoreConfidence! * 100).toFixed(0)}%
+                          </div>
                         </div>
                       )}
                     </div>
@@ -448,7 +568,9 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
                   <TableCell>
                     <Select
                       value={score.linkedPlayerId || ""}
-                      onValueChange={(value) => handlePlayerSelect(index, value)}
+                      onValueChange={(value) =>
+                        handlePlayerSelect(index, value)
+                      }
                     >
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="Select player" />
@@ -456,7 +578,8 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
                       <SelectContent>
                         {players.map((player) => (
                           <SelectItem key={player.id} value={player.id}>
-                            {player.canonical_name} {player.is_alt && "(Alt)"}
+                            {player.canonical_name}{" "}
+                            {player.is_alt && "(Alt)"}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -466,8 +589,9 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
                     <div>{score.imageSource}</div>
                     {score.metadata && (
                       <div className="mt-1">
-                        {score.metadata.originalWidth}×{score.metadata.originalHeight}px
-                        {' '}(scale {score.metadata.scaleFactor?.toFixed(2)}×)
+                        {score.metadata.originalWidth}×
+                        {score.metadata.originalHeight}px{" "}
+                        (scale {score.metadata.scaleFactor?.toFixed(2)}×)
                       </div>
                     )}
                   </TableCell>
@@ -484,7 +608,11 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => setExpandedRow(expandedRow === index ? null : index)}
+                          onClick={() =>
+                            setExpandedRow(
+                              expandedRow === index ? null : index
+                            )
+                          }
                         >
                           {expandedRow === index ? (
                             <ChevronUp className="h-4 w-4" />
@@ -515,32 +643,44 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
                     </div>
                   </TableCell>
                 </TableRow>
-                
+
                 {expandedRow === index && score.metadata?.nameCanvas && (
                   <TableRow>
                     <TableCell colSpan={7} className="bg-muted/30">
                       <div className="p-4 space-y-4">
                         <div className="grid grid-cols-2 gap-4">
                           <div>
-                            <div className="text-sm font-medium mb-2">Name Region</div>
-                            <img 
-                              src={score.metadata.nameCanvas.toDataURL()} 
+                            <div className="text-sm font-medium mb-2">
+                              Name Region
+                            </div>
+                            <img
+                              src={score.metadata.nameCanvas.toDataURL()}
                               alt="Name OCR region"
                               className="border rounded"
                             />
                             <div className="text-xs text-muted-foreground mt-1">
-                              Confidence: {(score.metadata.nameConfidence! * 100).toFixed(1)}%
+                              Confidence:{" "}
+                              {(
+                                score.metadata.nameConfidence! * 100
+                              ).toFixed(1)}
+                              %
                             </div>
                           </div>
                           <div>
-                            <div className="text-sm font-medium mb-2">Score Region</div>
-                            <img 
-                              src={score.metadata.scoreCanvas!.toDataURL()} 
+                            <div className="text-sm font-medium mb-2">
+                              Score Region
+                            </div>
+                            <img
+                              src={score.metadata.scoreCanvas!.toDataURL()}
                               alt="Score OCR region"
                               className="border rounded"
                             />
                             <div className="text-xs text-muted-foreground mt-1">
-                              Confidence: {(score.metadata.scoreConfidence! * 100).toFixed(1)}%
+                              Confidence:{" "}
+                              {(
+                                score.metadata.scoreConfidence! * 100
+                              ).toFixed(1)}
+                              %
                               {score.metadata.rawScoreText && (
                                 <> • Raw: {score.metadata.rawScoreText}</>
                               )}
@@ -548,9 +688,17 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
                           </div>
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          <div>Original: {score.metadata.originalWidth}×{score.metadata.originalHeight}px</div>
-                          <div>Processed: {score.metadata.processedWidth}×{score.metadata.processedHeight}px</div>
-                          <div>Scale: {score.metadata.scaleFactor?.toFixed(2)}×</div>
+                          <div>
+                            Original: {score.metadata.originalWidth}×
+                            {score.metadata.originalHeight}px
+                          </div>
+                          <div>
+                            Processed: {score.metadata.processedWidth}×
+                            {score.metadata.processedHeight}px
+                          </div>
+                          <div>
+                            Scale: {score.metadata.scaleFactor?.toFixed(2)}×
+                          </div>
                         </div>
                       </div>
                     </TableCell>
@@ -568,7 +716,12 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
         </div>
         <Button
           onClick={() => setShowCommitDialog(true)}
-          disabled={verifiedCount === 0 || loading || hasErrors || !allVerifiedAndLinked}
+          disabled={
+            verifiedCount === 0 ||
+            loading ||
+            hasErrors ||
+            !allVerifiedAndLinked
+          }
           size="lg"
         >
           <CheckCircle className="mr-2 h-4 w-4" />
@@ -584,7 +737,8 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
               Commit Verified Scores?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Commit {verifiedCount} verified scores for this event? This will overwrite existing scores for these players and cannot be undone.
+              Commit {verifiedCount} verified scores for this event? This will
+              overwrite existing scores for these players and cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
