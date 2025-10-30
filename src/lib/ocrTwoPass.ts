@@ -1,421 +1,259 @@
-/**
- * Two-Pass OCR: Row Segmentation + Name/Score Split
- *
- * Now wired to normalized parsing from ocrProcessing.ts so we get:
- * - cleaned player names
- * - BIGINT-safe scores
- * - per-row confidence
- */
+// src/lib/ocrTwoPass.ts
+// Avalon leaderboard OCR – separator version (wider crops + contrast)
 
-import { createWorker, Worker } from "tesseract.js";
-import {
-  correctNumericOCR,
-} from "./ocrProcessing"; // <-- we just updated this file
+import Tesseract from "tesseract.js";
 
-export interface RowSegment {
-  y: number;
-  height: number;
-  canvas: HTMLCanvasElement;
-}
+/* ------------------------ tiny helpers ------------------------ */
 
-export interface TwoPassResult {
-  // raw from tesseract per row
-  name: string;
-  score: string;
-  nameConfidence: number;
-  scoreConfidence: number;
-  nameCanvas: HTMLCanvasElement;
-  scoreCanvas: HTMLCanvasElement;
-
-  // normalized / app-friendly
-  parsedName?: string;
-  parsedScore?: number;
-  bigScore?: string;
-  combinedConfidence?: number;
-}
-
-let sharedWorker: Worker | null = null;
-
-/**
- * Get or create shared Tesseract worker
- */
-export const getSharedWorker = async (): Promise<Worker> => {
-  if (!sharedWorker) {
-    // 'eng', 1 = default engine
-    sharedWorker = await createWorker("eng", 1);
-  }
-  return sharedWorker;
+const loadImageFromFile = (file: File): Promise<HTMLImageElement> => {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = (err) => {
+      URL.revokeObjectURL(url);
+      reject(err);
+    };
+    img.src = url;
+  });
 };
 
-/**
- * Terminate shared worker
- */
-export const terminateSharedWorker = async (): Promise<void> => {
-  if (sharedWorker) {
-    await sharedWorker.terminate();
-    sharedWorker = null;
-  }
+const imageToCanvas = (img: HTMLImageElement): HTMLCanvasElement => {
+  const c = document.createElement("canvas");
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  const ctx = c.getContext("2d", { willReadFrequently: true })!;
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+  return c;
 };
 
-/**
- * Smooth projection profile
- */
-const smoothProjection = (
-  projection: number[],
-  windowSize: number = 9
-): number[] => {
-  const smoothed = new Array(projection.length).fill(0);
-  const halfWindow = Math.floor(windowSize / 2);
-
-  for (let i = 0; i < projection.length; i++) {
-    let sum = 0;
-    let count = 0;
-    for (
-      let j = Math.max(0, i - halfWindow);
-      j < Math.min(projection.length, i + halfWindow + 1);
-      j++
-    ) {
-      sum += projection[j];
-      count++;
-    }
-    smoothed[i] = sum / count;
-  }
-
-  return smoothed;
-};
-
-/**
- * Find valleys (separators) in projection profile
- * Dark divider lines appear as HIGH values in dark pixel count
- */
-const findValleys = (projection: number[], minGap: number = 6): number[] => {
-  const valleys: number[] = [];
-  const maxVal = Math.max(...projection);
-  const avgVal = projection.reduce((a, b) => a + b, 0) / projection.length;
-
-  // Look for peaks (dark lines) rather than valleys
-  const threshold = Math.max(avgVal * 1.5, maxVal * 0.3);
-
-  let inPeak = false;
-  let peakStart = 0;
-  let peakMax = 0;
-  let peakMaxIdx = 0;
-
-  for (let i = 0; i < projection.length; i++) {
-    if (projection[i] > threshold && !inPeak) {
-      peakStart = i;
-      peakMax = projection[i];
-      peakMaxIdx = i;
-      inPeak = true;
-    } else if (inPeak) {
-      if (projection[i] > peakMax) {
-        peakMax = projection[i];
-        peakMaxIdx = i;
-      }
-      if (projection[i] < threshold) {
-        // End of peak - record the maximum point
-        valleys.push(peakMaxIdx);
-        inPeak = false;
-      }
-    }
-  }
-
-  // Merge close valleys
-  const merged: number[] = [];
-  for (let i = 0; i < valleys.length; i++) {
-    if (merged.length === 0 || valleys[i] - merged[merged.length - 1] > minGap) {
-      merged.push(valleys[i]);
-    }
-  }
-
-  return merged;
-};
-
-/**
- * Segment image into horizontal row bands using robust projection profiling
- */
-export const segmentRows = (
-  canvas: HTMLCanvasElement,
-  grayscaleCanvas: HTMLCanvasElement,
-  expectedRows?: number
-): RowSegment[] => {
-  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const data = imageData.data;
-
-  // Calculate horizontal projection (dark pixel count per row)
-  const projection = new Array(canvas.height).fill(0);
-
-  for (let y = 0; y < canvas.height; y++) {
-    for (let x = 0; x < canvas.width; x++) {
-      const idx = (y * canvas.width + x) * 4;
-      const brightness = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
-      if (brightness < 100) {
-        projection[y]++;
-      }
-    }
-  }
-
-  // Smooth projection
-  const smoothed = smoothProjection(projection, 9);
-
-  // Find valleys
-  const valleys = findValleys(smoothed, 6);
-
-  // Build segments from valleys (dark divider lines)
-  const minHeight = 55;
-  const segments: RowSegment[] = [];
-
-  if (valleys.length >= 1 && (!expectedRows || valleys.length + 1 === expectedRows)) {
-    // Use valleys to define bands
-    let prevY = 0;
-    for (const valley of valleys) {
-      const rowHeight = valley - prevY;
-      if (rowHeight >= minHeight) {
-        const cropHeight = Math.floor(rowHeight * 0.8);
-        if (cropHeight >= minHeight) {
-          segments.push({
-            y: prevY,
-            height: cropHeight,
-            canvas: cropCanvas(grayscaleCanvas, 0, prevY, canvas.width, cropHeight),
-          });
-        }
-      }
-      prevY = valley;
-    }
-    // Last segment
-    const rowHeight = canvas.height - prevY;
-    if (rowHeight >= minHeight) {
-      const cropHeight = Math.floor(rowHeight * 0.8);
-      if (cropHeight >= minHeight) {
-        segments.push({
-          y: prevY,
-          height: cropHeight,
-          canvas: cropCanvas(grayscaleCanvas, 0, prevY, canvas.width, cropHeight),
-        });
-      }
-    }
-  }
-
-  // Fallback: if no valid segments or count doesn't match expected
-  if (segments.length === 0 || (expectedRows && segments.length !== expectedRows)) {
-    const targetRows = expectedRows || 5; // default
-    const sliceHeight = canvas.height / targetRows;
-
-    segments.length = 0;
-    for (let i = 0; i < targetRows; i++) {
-      const idealY = Math.round(i * sliceHeight);
-      // Snap to nearest valley within ±20px
-      let snapY = idealY;
-      let minDist = 20;
-      for (const valley of valleys) {
-        const dist = Math.abs(valley - idealY);
-        if (dist < minDist) {
-          minDist = dist;
-          snapY = valley;
-        }
-      }
-
-      const nextIdealY = Math.round((i + 1) * sliceHeight);
-      let snapNextY = nextIdealY;
-      minDist = 20;
-      for (const valley of valleys) {
-        const dist = Math.abs(valley - nextIdealY);
-        if (dist < minDist) {
-          minDist = dist;
-          snapNextY = valley;
-        }
-      }
-
-      const rowHeight = snapNextY - snapY;
-      if (rowHeight >= minHeight && snapNextY <= canvas.height) {
-        const cropHeight = Math.floor(rowHeight * 0.8);
-        if (cropHeight >= minHeight) {
-          segments.push({
-            y: snapY,
-            height: cropHeight,
-            canvas: cropCanvas(grayscaleCanvas, 0, snapY, canvas.width, cropHeight),
-          });
-        }
-      }
-    }
-  }
-
-  return segments;
-};
-
-/**
- * Crop canvas region
- */
 const cropCanvas = (
-  source: HTMLCanvasElement,
+  src: HTMLCanvasElement,
   x: number,
   y: number,
-  width: number,
-  height: number
+  w: number,
+  h: number
 ): HTMLCanvasElement => {
-  const cropped = document.createElement("canvas");
-  cropped.width = width;
-  cropped.height = height;
-
-  const ctx = cropped.getContext("2d")!;
-  ctx.drawImage(source, x, y, width, height, 0, 0, width, height);
-
-  return cropped;
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext("2d", { willReadFrequently: true })!;
+  ctx.drawImage(src, x, y, w, h, 0, 0, w, h);
+  return out;
 };
 
 /**
- * Split row canvas into name (left) and score (right) regions
+ * quick contrast boost:
+ *  - convert to gray
+ *  - push dark pixels darker, light pixels lighter
  */
-export const splitNameScore = (
-  rowCanvas: HTMLCanvasElement,
-  splitRatio: number = 0.7
-): { nameCanvas: HTMLCanvasElement; scoreCanvas: HTMLCanvasElement } => {
-  const splitX = Math.round(rowCanvas.width * splitRatio);
+const boostContrast = (canvas: HTMLCanvasElement): HTMLCanvasElement => {
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  const { width, height } = canvas;
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const data = imgData.data;
 
-  const nameCanvas = cropCanvas(rowCanvas, 0, 0, splitX, rowCanvas.height);
-  const scoreCanvas = cropCanvas(
-    rowCanvas,
-    splitX,
-    0,
-    rowCanvas.width - splitX,
-    rowCanvas.height
-  );
-
-  return { nameCanvas, scoreCanvas };
-};
-
-/**
- * Run OCR on name region (text mode with punctuation)
- */
-export const ocrNameRegion = async (
-  canvas: HTMLCanvasElement,
-  worker: Worker
-): Promise<{ text: string; confidence: number }> => {
-  await worker.setParameters({
-    preserve_interword_spaces: "1",
-    tessedit_char_whitelist:
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .'-:_",
-    user_defined_dpi: "300",
-  });
-
-  const { data } = await worker.recognize(canvas, {
-    rotateAuto: false,
-  });
-
-  return {
-    text: data.text.trim(),
-    confidence: data.confidence / 100,
-  };
-};
-
-/**
- * Run OCR on score region (numeric mode)
- */
-export const ocrScoreRegion = async (
-  canvas: HTMLCanvasElement,
-  worker: Worker
-): Promise<{ text: string; confidence: number }> => {
-  await worker.setParameters({
-    tessedit_char_whitelist: "0123456789,.",
-    user_defined_dpi: "300",
-    preserve_interword_spaces: "0",
-  });
-
-  const { data } = await worker.recognize(canvas, {
-    rotateAuto: false,
-  });
-
-  return {
-    text: data.text.trim(),
-    confidence: data.confidence / 100,
-  };
-};
-
-/**
- * Two-pass OCR on a single row
- * Now returns normalized name + bigint-safe score
- */
-export const twoPassOCRRow = async (
-  rowCanvas: HTMLCanvasElement,
-  worker: Worker,
-  splitRatio: number = 0.7
-): Promise<TwoPassResult> => {
-  const { nameCanvas, scoreCanvas } = splitNameScore(rowCanvas, splitRatio);
-
-  const [nameResult, scoreResult] = await Promise.all([
-    ocrNameRegion(nameCanvas, worker),
-    ocrScoreRegion(scoreCanvas, worker),
-  ]);
-
-  // normalize name (strip leading junk)
-  const cleanedName = nameResult.text.replace(/^[|I1\.\-]+/, "").trim();
-
-  // normalize score using shared util
-  const correction = correctNumericOCR(scoreResult.text);
-  const combinedConfidence =
-    (nameResult.confidence * 0.6 + scoreResult.confidence * 0.4) *
-    correction.confidence;
-
-  return {
-    name: nameResult.text,
-    score: scoreResult.text,
-    nameConfidence: nameResult.confidence,
-    scoreConfidence: scoreResult.confidence,
-    nameCanvas,
-    scoreCanvas,
-
-    parsedName: cleanedName.length >= 2 ? cleanedName : "",
-    parsedScore: correction.value,
-    bigScore: correction.bigValue,
-    combinedConfidence,
-  };
-};
-
-/**
- * Process entire image with two-pass OCR
- */
-export const processTwoPassOCR = async (
-  canvas: HTMLCanvasElement,
-  grayscaleCanvas: HTMLCanvasElement,
-  splitRatio: number = 0.7,
-  expectedRows?: number,
-  progressCallback?: (current: number, total: number) => void
-): Promise<TwoPassResult[]> => {
-  const worker = await getSharedWorker();
-
-  // Segment into rows using both thresholded and grayscale versions
-  let segments = segmentRows(canvas, grayscaleCanvas, expectedRows);
-
-  // Fallback: if no rows found, process entire image as one row
-  if (segments.length === 0) {
-    segments = [
-      {
-        y: 0,
-        height: grayscaleCanvas.height,
-        canvas: grayscaleCanvas,
-      },
-    ];
+  // simple linear boost tuned for beige/brown
+  const gain = 1.35;
+  for (let i = 0; i < data.length; i += 4) {
+    // gray
+    const g = data[i] * 0.3 + data[i + 1] * 0.59 + data[i + 2] * 0.11;
+    // center around 128 and stretch
+    let v = (g - 128) * gain + 128;
+    if (v < 0) v = 0;
+    if (v > 255) v = 255;
+    data[i] = data[i + 1] = data[i + 2] = v;
   }
 
-  const results: TwoPassResult[] = [];
+  ctx.putImageData(imgData, 0, 0);
+  return canvas;
+};
 
-  for (let i = 0; i < segments.length; i++) {
-    try {
-      const result = await twoPassOCRRow(segments[i].canvas, worker, splitRatio);
+/* -------------------- separator detection --------------------- */
 
-      // Only include if we got at least a plausible name
-      if (result.parsedName && result.parsedName.length > 0) {
-        results.push(result);
+const detectSeparatorLines = (canvas: HTMLCanvasElement): number[] => {
+  const h = canvas.height;
+  const w = canvas.width;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  const data = ctx.getImageData(0, 0, w, h).data;
+
+  // we made this more forgiving
+  const DARK_THRESHOLD = 90;
+  const MIN_RUN = 3;
+
+  const seps: number[] = [];
+  let runStart = -1;
+
+  const lumAt = (i: number) => {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  };
+
+  for (let y = 0; y < h; y++) {
+    let sum = 0;
+    let samples = 0;
+    for (let x = 0; x < w; x += 8) {
+      const idx = (y * w + x) * 4;
+      sum += lumAt(idx);
+      samples++;
+    }
+    const avg = sum / samples;
+    const isDark = avg < DARK_THRESHOLD;
+
+    if (isDark) {
+      if (runStart === -1) runStart = y;
+    } else if (runStart !== -1) {
+      const runLen = y - runStart;
+      if (runLen >= MIN_RUN) {
+        const mid = Math.floor((runStart + y) / 2);
+        seps.push(mid);
       }
-
-      if (progressCallback) {
-        progressCallback(i + 1, segments.length);
-      }
-    } catch (error) {
-      console.error(`Failed to OCR row ${i}:`, error);
+      runStart = -1;
     }
   }
 
-  return results;
+  if (runStart !== -1) {
+    const runLen = h - runStart;
+    if (runLen >= MIN_RUN) {
+      const mid = Math.floor((runStart + h) / 2);
+      seps.push(mid);
+    }
+  }
+
+  return seps;
+};
+
+const makeRowRects = (
+  canvas: HTMLCanvasElement,
+  seps: number[]
+): Array<{ y: number; height: number }> => {
+  const h = canvas.height;
+  const rows: Array<{ y: number; height: number }> = [];
+
+  if (seps.length === 0) {
+    rows.push({ y: 0, height: h });
+    return rows;
+  }
+
+  // top chunk
+  if (seps[0] > 12) {
+    rows.push({ y: 0, height: seps[0] - 4 });
+  }
+
+  for (let i = 0; i < seps.length - 1; i++) {
+    const top = seps[i] + 4;
+    const bottom = seps[i + 1] - 4;
+    if (bottom > top + 12) {
+      rows.push({ y: top, height: bottom - top });
+    }
+  }
+
+  // bottom chunk
+  const last = seps[seps.length - 1];
+  if (h - last > 14) {
+    rows.push({ y: last + 4, height: h - (last + 4) });
+  }
+
+  return rows.filter((r) => r.height > 26);
+};
+
+/* ----------------------- OCR wrapper -------------------------- */
+
+const recognizeCanvas = async (
+  canvas: HTMLCanvasElement,
+  psm: number,
+  allowlist?: string
+): Promise<{ text: string; confidence: number }> => {
+  // boost contrast before sending to tesseract
+  const boosted = boostContrast(canvas);
+  const dataUrl = boosted.toDataURL("image/png");
+
+  const { data } = await Tesseract.recognize(dataUrl, "eng", {
+    tessedit_pageseg_mode: psm,
+    tessedit_char_whitelist: allowlist,
+  } as any);
+
+  return {
+    text: data?.text || "",
+    confidence: data?.confidence || 0,
+  };
+};
+
+/* ----------------------- MAIN EXPORT -------------------------- */
+
+export const runAvalonLeaderboardOCR = async (file: File): Promise<any[]> => {
+  const img = await loadImageFromFile(file);
+  const base = imageToCanvas(img);
+
+  const seps = detectSeparatorLines(base);
+  const rowRects = makeRowRects(base, seps);
+
+  const out: any[] = [];
+
+  for (const rect of rowRects) {
+    // row slice, padded a little vertically
+    const padY = 2;
+    const rowCanvas = cropCanvas(
+      base,
+      0,
+      Math.max(0, rect.y - padY),
+      base.width,
+      Math.min(base.height - rect.y + padY, rect.height + padY * 2)
+    );
+
+    // wider name and score regions
+    const totalW = base.width;
+    const nameX = 4; // start almost at the left
+    const nameW = Math.floor(totalW * 0.5); // give it half
+    const scoreW = Math.floor(totalW * 0.38); // slightly wider than before
+    const scoreX = totalW - scoreW - 6;
+
+    const nameCanvas = cropCanvas(rowCanvas, nameX, 0, nameW, rowCanvas.height);
+    const scoreCanvas = cropCanvas(rowCanvas, scoreX, 0, scoreW, rowCanvas.height);
+
+    // OCR
+    const nameRes = await recognizeCanvas(nameCanvas, 7 /* single line */);
+    const scoreRes = await recognizeCanvas(
+      scoreCanvas,
+      7,
+      "0123456789,"
+    );
+
+    const rawScore = (scoreRes.text || "").replace(/\s+/g, "");
+    const digitsOnly = rawScore.replace(/[^\d]/g, "");
+    const parsedScore = digitsOnly ? parseInt(digitsOnly, 10) : 0;
+
+    // confidence: bias toward name
+    const nameConf = (nameRes.confidence || 0) / 100;
+    const scoreConf = (scoreRes.confidence || 0) / 100;
+    const combined = Math.min(1, nameConf * 0.7 + scoreConf * 0.3);
+
+    out.push({
+      parsedName: (nameRes.text || "").trim(),
+      parsedScore,
+      bigScore: digitsOnly || "0",
+      confidence: combined,
+      rawText: `${nameRes.text || ""} | ${scoreRes.text || ""}`,
+      imageSource: file.name,
+      metadata: {
+        nameConfidence: nameConf,
+        scoreConfidence: scoreConf,
+        rawScoreText: rawScore,
+        nameCanvas,
+        scoreCanvas,
+        originalWidth: base.width,
+        originalHeight: base.height,
+        processedWidth: base.width,
+        processedHeight: base.height,
+        scaleFactor: 1,
+      },
+    });
+  }
+
+  return out;
 };

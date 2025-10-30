@@ -65,7 +65,7 @@ interface ScoreRow {
   linkedPlayerId?: string;
   isVerified: boolean;
   scoreError?: string;
-  bigScore?: string; // <-- bigint-safe digits string from OCR
+  bigScore?: string; // bigint-safe digits string from OCR
   metadata?: {
     nameConfidence?: number;
     scoreConfidence?: number;
@@ -103,19 +103,26 @@ const EnhancedScoreReview = ({
   }, []);
 
   useEffect(() => {
-    if (parsedScores.length > 0) {
+    if (parsedScores && parsedScores.length > 0) {
       const mapped: ScoreRow[] = parsedScores.map((s: any) => {
         const suggestedPlayer = findMatchingPlayer(s.parsedName);
         return {
           ...s,
-          // ensure we always have a number for UI input
-          parsedScore: typeof s.parsedScore === "number" ? s.parsedScore : parseInt(s.bigScore || "0", 10) || 0,
-          bigScore: s.bigScore || s.parsedScore?.toString()?.replace(/[^\d]/g, "") || "0",
+          parsedName: s.parsedName ?? s.name ?? "",
+          parsedScore:
+            typeof s.parsedScore === "number"
+              ? s.parsedScore
+              : parseInt(s.bigScore || "0", 10) || 0,
+          bigScore:
+            s.bigScore ||
+            s.parsedScore?.toString()?.replace(/[^\d]/g, "") ||
+            "0",
           linkedPlayerId: suggestedPlayer?.id,
           isVerified: false,
         };
       });
       setScores(mapped);
+      // fire and forget
       saveToOCRRows(mapped);
     }
   }, [parsedScores]);
@@ -138,7 +145,6 @@ const EnhancedScoreReview = ({
     if (!user) return;
 
     const rows = scoreRows.map((s) => {
-      // prefer bigint-safe digits
       const digitsOnly =
         s.bigScore ||
         s.parsedScore.toString().replace(/[^\d]/g, "") ||
@@ -146,31 +152,35 @@ const EnhancedScoreReview = ({
 
       return {
         event_id: eventId,
-        upload_id: s.uploadId,
-        parsed_name: s.parsedName,
-        parsed_score: s.parsedScore,
-        // store bigint as text or numeric in DB
+        upload_id: s.uploadId ?? null,
+        parsed_name: s.parsedName ?? "",
+        parsed_score: s.parsedScore ?? 0,
+        // our DB type may be numeric/bigint, but we want to keep
+        // the string version — so we cast through any on insert
         parsed_score_big: digitsOnly,
-        raw_text: s.rawText,
+        raw_text: s.rawText ?? "",
         raw_score_text: s.bigScore
           ? s.bigScore.replace(/\B(?=(\d{3})+(?!\d))/g, ",")
-          : s.parsedScore.toLocaleString(),
+          : (s.parsedScore ?? 0).toLocaleString(),
         corrected_value: s.correctedValue,
-        confidence: s.confidence,
-        linked_player_id: s.linkedPlayerId,
-        is_verified: s.isVerified,
-        image_source: s.imageSource,
+        confidence: s.confidence ?? 0,
+        linked_player_id: s.linkedPlayerId ?? null,
+        is_verified: s.isVerified ?? false,
+        image_source: s.imageSource ?? "",
+        created_by: user.id,
       };
     });
 
-    // we don't want to crash UX if some rows fail
-    const { error } = await supabase.from("ocr_rows").insert(rows);
+    // 👇 TS fix: our supabase types think parsed_score_big is numeric
+    // but we're providing a string for bigint-safety. Cast to any.
+    const { error } = await supabase.from("ocr_rows").insert(rows as any);
     if (error) {
       console.warn("Failed to save ocr_rows:", error.message);
     }
   };
 
   const findMatchingPlayer = (name: string) => {
+    if (!name) return null;
     const normalized = name.toLowerCase().trim();
     return players.find(
       (p) =>
@@ -194,11 +204,9 @@ const EnhancedScoreReview = ({
   };
 
   const handleScoreChange = (index: number, value: string) => {
-    // Validate format: should match /^\d{1,3}(,\d{3})*$/
     const isValid =
       /^\d{1,3}(,\d{3})*$/.test(value.trim()) || value.trim() === "";
 
-    // Remove commas and parse
     const numericValue = value.replace(/,/g, "");
     const parsedNum = parseInt(numericValue) || 0;
 
@@ -208,7 +216,6 @@ const EnhancedScoreReview = ({
           ? {
               ...s,
               parsedScore: parsedNum,
-              // keep bigint version in sync
               bigScore: numericValue || "0",
               scoreError:
                 !isValid && value.trim()
@@ -297,7 +304,6 @@ const EnhancedScoreReview = ({
       return;
     }
 
-    // Check for any score errors
     const hasErrors = scores.some((s) => s.scoreError);
     if (hasErrors) {
       toast.error("⚠️ Fix invalid scores before committing");
@@ -311,7 +317,6 @@ const EnhancedScoreReview = ({
       } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
 
-      // Fetch all players to resolve alts to mains
       const { data: allPlayers, error: playersError } = await supabase
         .from("players")
         .select("id, is_alt, main_player_id")
@@ -323,7 +328,6 @@ const EnhancedScoreReview = ({
         (allPlayers || []).map((p: any) => [p.id, p])
       );
 
-      // Resolve alts to mains and group by player, keep highest score (BIGINT)
       const playerScores = new Map<string, string>();
       let skippedCount = 0;
 
@@ -362,7 +366,6 @@ const EnhancedScoreReview = ({
         return;
       }
 
-      // Create batch operation
       const { data: batchOp, error: batchError } = await supabase
         .from("batch_operations")
         .insert({
@@ -376,23 +379,21 @@ const EnhancedScoreReview = ({
 
       if (batchError) throw batchError;
 
-      // Upsert scores with BIGINT-safe strings
-      // NOTE: this assumes your 'scores' table can accept numeric/bigint from strings
       const scoreData = Array.from(playerScores.entries()).map(
         ([playerId, scoreBig]) => ({
           event_id: eventId,
           player_id: playerId,
-          // send as string, let DB cast
-          score: scoreBig,
+          score: scoreBig, // string → DB casts
           raw_score: scoreBig,
           verified: true,
           created_by: user.id,
         })
       );
 
+      // 👇 same trick: our generated types may say "number", but we want string
       const { error: scoresError } = await supabase
         .from("scores")
-        .upsert(scoreData, {
+        .upsert(scoreData as any, {
           onConflict: "event_id,player_id",
         });
 
@@ -417,11 +418,13 @@ const EnhancedScoreReview = ({
   };
 
   const filteredScores = searchTerm
-    ? scores.filter(
-        (s) =>
-          s.parsedName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    ? scores.filter((s) => {
+        const name = s.parsedName || "";
+        return (
+          name.toLowerCase().includes(searchTerm.toLowerCase()) ||
           s.confidence.toString().includes(searchTerm)
-      )
+        );
+      })
     : scores;
 
   if (!canManage) {
@@ -478,7 +481,11 @@ const EnhancedScoreReview = ({
         </Button>
 
         {highConfidenceCount > 0 && (
-          <Button variant="outline" size="sm" onClick={bulkApproveHighConfidence}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={bulkApproveHighConfidence}
+          >
             <CheckCircle className="mr-2 h-4 w-4" />
             Bulk Approve ≥95% ({highConfidenceCount})
           </Button>
@@ -528,7 +535,9 @@ const EnhancedScoreReview = ({
                               )
                             : score.parsedScore.toLocaleString()
                         }
-                        onChange={(e) => handleScoreChange(index, e.target.value)}
+                        onChange={(e) =>
+                          handleScoreChange(index, e.target.value)
+                        }
                         className={`w-32 ${
                           score.scoreError ? "border-red-500" : ""
                         }`}
@@ -548,18 +557,26 @@ const EnhancedScoreReview = ({
                   </TableCell>
                   <TableCell>
                     <div className="space-y-1">
-                      <Badge variant={getConfidenceBadgeVariant(score.confidence)}>
+                      <Badge
+                        variant={getConfidenceBadgeVariant(score.confidence)}
+                      >
                         {(score.confidence * 100).toFixed(0)}%
                       </Badge>
                       {score.metadata && (
                         <div className="text-xs text-muted-foreground">
                           <div>
                             Name:{" "}
-                            {(score.metadata.nameConfidence! * 100).toFixed(0)}%
+                            {(
+                              (score.metadata.nameConfidence || 0) * 100
+                            ).toFixed(0)}
+                            %
                           </div>
                           <div>
                             Score:{" "}
-                            {(score.metadata.scoreConfidence! * 100).toFixed(0)}%
+                            {(
+                              (score.metadata.scoreConfidence || 0) * 100
+                            ).toFixed(0)}
+                            %
                           </div>
                         </div>
                       )}
@@ -661,7 +678,7 @@ const EnhancedScoreReview = ({
                             <div className="text-xs text-muted-foreground mt-1">
                               Confidence:{" "}
                               {(
-                                score.metadata.nameConfidence! * 100
+                                (score.metadata.nameConfidence || 0) * 100
                               ).toFixed(1)}
                               %
                             </div>
@@ -678,7 +695,7 @@ const EnhancedScoreReview = ({
                             <div className="text-xs text-muted-foreground mt-1">
                               Confidence:{" "}
                               {(
-                                score.metadata.scoreConfidence! * 100
+                                (score.metadata.scoreConfidence || 0) * 100
                               ).toFixed(1)}
                               %
                               {score.metadata.rawScoreText && (

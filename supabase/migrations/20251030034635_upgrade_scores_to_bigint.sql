@@ -1,0 +1,1 @@
+ALTER TABLE scores ALTER COLUMN score TYPE BIGINT USING score::bigint;
