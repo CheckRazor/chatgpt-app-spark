@@ -63,22 +63,37 @@ const smoothProjection = (projection: number[], windowSize: number = 9): number[
 
 /**
  * Find valleys (separators) in projection profile
+ * Dark divider lines appear as HIGH values in dark pixel count
  */
 const findValleys = (projection: number[], minGap: number = 6): number[] => {
   const valleys: number[] = [];
-  const threshold = Math.max(...projection) * 0.1; // 10% of max
+  const maxVal = Math.max(...projection);
+  const avgVal = projection.reduce((a, b) => a + b, 0) / projection.length;
   
-  let inValley = false;
-  let valleyStart = 0;
+  // Look for peaks (dark lines) rather than valleys
+  const threshold = Math.max(avgVal * 1.5, maxVal * 0.3);
+  
+  let inPeak = false;
+  let peakStart = 0;
+  let peakMax = 0;
+  let peakMaxIdx = 0;
   
   for (let i = 0; i < projection.length; i++) {
-    if (projection[i] < threshold && !inValley) {
-      valleyStart = i;
-      inValley = true;
-    } else if (projection[i] >= threshold && inValley) {
-      const valleyMid = Math.floor((valleyStart + i) / 2);
-      valleys.push(valleyMid);
-      inValley = false;
+    if (projection[i] > threshold && !inPeak) {
+      peakStart = i;
+      peakMax = projection[i];
+      peakMaxIdx = i;
+      inPeak = true;
+    } else if (inPeak) {
+      if (projection[i] > peakMax) {
+        peakMax = projection[i];
+        peakMaxIdx = i;
+      }
+      if (projection[i] < threshold) {
+        // End of peak - record the maximum point
+        valleys.push(peakMaxIdx);
+        inPeak = false;
+      }
     }
   }
   
@@ -95,23 +110,26 @@ const findValleys = (projection: number[], minGap: number = 6): number[] => {
 
 /**
  * Segment image into horizontal row bands using robust projection profiling
+ * For Plarium leaderboards: detect dark divider lines between rows
  */
 export const segmentRows = (
   canvas: HTMLCanvasElement,
+  grayscaleCanvas: HTMLCanvasElement,
   expectedRows?: number
 ): RowSegment[] => {
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
   
-  // Calculate horizontal projection (black pixel count per row for binarized)
+  // Calculate horizontal projection (dark pixel count per row)
   const projection = new Array(canvas.height).fill(0);
   
   for (let y = 0; y < canvas.height; y++) {
     for (let x = 0; x < canvas.width; x++) {
       const idx = (y * canvas.width + x) * 4;
-      // Count black pixels (text is black after threshold)
-      if (data[idx] === 0) {
+      // Count dark pixels (divider lines are dark)
+      const brightness = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
+      if (brightness < 100) {
         projection[y]++;
       }
     }
@@ -123,38 +141,45 @@ export const segmentRows = (
   // Find valleys
   const valleys = findValleys(smoothed, 6);
   
-  // Build segments from valleys
-  const minHeight = 56;
+  // Build segments from valleys (dark divider lines)
+  const minHeight = 55;
   const segments: RowSegment[] = [];
   
   if (valleys.length >= 1 && (!expectedRows || valleys.length + 1 === expectedRows)) {
     // Use valleys to define bands
     let prevY = 0;
     for (const valley of valleys) {
-      const height = valley - prevY;
-      if (height >= minHeight) {
-        segments.push({
-          y: prevY,
-          height,
-          canvas: cropCanvas(canvas, 0, prevY, canvas.width, height),
-        });
+      const rowHeight = valley - prevY;
+      if (rowHeight >= minHeight) {
+        // Crop top 80% of band to remove bottom noise line
+        const cropHeight = Math.floor(rowHeight * 0.8);
+        if (cropHeight >= minHeight) {
+          segments.push({
+            y: prevY,
+            height: cropHeight,
+            canvas: cropCanvas(grayscaleCanvas, 0, prevY, canvas.width, cropHeight),
+          });
+        }
       }
       prevY = valley;
     }
     // Last segment
-    const height = canvas.height - prevY;
-    if (height >= minHeight) {
-      segments.push({
-        y: prevY,
-        height,
-        canvas: cropCanvas(canvas, 0, prevY, canvas.width, height),
-      });
+    const rowHeight = canvas.height - prevY;
+    if (rowHeight >= minHeight) {
+      const cropHeight = Math.floor(rowHeight * 0.8);
+      if (cropHeight >= minHeight) {
+        segments.push({
+          y: prevY,
+          height: cropHeight,
+          canvas: cropCanvas(grayscaleCanvas, 0, prevY, canvas.width, cropHeight),
+        });
+      }
     }
   }
   
-  // Fallback: if unrealistic count or expectedRows set
-  if (segments.length < 2 || segments.length > 20 || (expectedRows && segments.length !== expectedRows)) {
-    const targetRows = expectedRows || Math.round(canvas.height / 80);
+  // Fallback: if no valid segments or count doesn't match expected
+  if (segments.length === 0 || (expectedRows && segments.length !== expectedRows)) {
+    const targetRows = expectedRows || 5; // Default to 5 for Plarium screenshots
     const sliceHeight = canvas.height / targetRows;
     
     segments.length = 0;
@@ -182,13 +207,17 @@ export const segmentRows = (
         }
       }
       
-      const height = snapNextY - snapY;
-      if (height >= minHeight && snapNextY <= canvas.height) {
-        segments.push({
-          y: snapY,
-          height,
-          canvas: cropCanvas(canvas, 0, snapY, canvas.width, height),
-        });
+      const rowHeight = snapNextY - snapY;
+      if (rowHeight >= minHeight && snapNextY <= canvas.height) {
+        // Crop top 80% of band
+        const cropHeight = Math.floor(rowHeight * 0.8);
+        if (cropHeight >= minHeight) {
+          segments.push({
+            y: snapY,
+            height: cropHeight,
+            canvas: cropCanvas(grayscaleCanvas, 0, snapY, canvas.width, cropHeight),
+          });
+        }
       }
     }
   }
@@ -233,6 +262,7 @@ export const splitNameScore = (
 
 /**
  * Run OCR on name region (text mode with punctuation)
+ * Uses non-thresholded grayscale to preserve brown text on beige
  */
 export const ocrNameRegion = async (
   canvas: HTMLCanvasElement,
@@ -240,7 +270,8 @@ export const ocrNameRegion = async (
 ): Promise<{ text: string; confidence: number }> => {
   await worker.setParameters({
     preserve_interword_spaces: '1',
-    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .\'-:_†<>/',
+    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .\'-:_†<>/\\',
+    user_defined_dpi: '300',
   });
   
   const { data } = await worker.recognize(canvas, {
@@ -306,21 +337,22 @@ export const twoPassOCRRow = async (
  */
 export const processTwoPassOCR = async (
   canvas: HTMLCanvasElement,
+  grayscaleCanvas: HTMLCanvasElement,
   splitRatio: number = 0.70,
   expectedRows?: number,
   progressCallback?: (current: number, total: number) => void
 ): Promise<TwoPassResult[]> => {
   const worker = await getSharedWorker();
   
-  // Segment into rows
-  let segments = segmentRows(canvas, expectedRows);
+  // Segment into rows using both thresholded and grayscale versions
+  let segments = segmentRows(canvas, grayscaleCanvas, expectedRows);
   
   // Fallback: if no rows found, try simple full-page split
   if (segments.length === 0) {
     segments = [{
       y: 0,
-      height: canvas.height,
-      canvas,
+      height: grayscaleCanvas.height,
+      canvas: grayscaleCanvas,
     }];
   }
   

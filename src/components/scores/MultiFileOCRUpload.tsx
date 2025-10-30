@@ -120,6 +120,7 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
       // Two-pass OCR with row segmentation
       const rows = await processTwoPassOCR(
         preprocessed.canvas,
+        preprocessed.grayscaleCanvas,
         splitRatio,
         expectedRows,
         (current, total) => {

@@ -5,6 +5,7 @@
 
 export interface PreprocessedImage {
   canvas: HTMLCanvasElement;
+  grayscaleCanvas: HTMLCanvasElement; // Non-thresholded for names
   originalWidth: number;
   originalHeight: number;
   processedWidth: number;
@@ -278,23 +279,35 @@ export const preprocessImageFile = async (
   const processedWidth = Math.round(originalWidth * scaleFactor);
   const processedHeight = Math.round(originalHeight * scaleFactor);
   
-  // Create canvas at processed dimensions
-  const canvas = document.createElement('canvas');
-  canvas.width = processedWidth;
-  canvas.height = processedHeight;
+  // Create thresholded canvas
+  const thresholdedCanvas = document.createElement('canvas');
+  thresholdedCanvas.width = processedWidth;
+  thresholdedCanvas.height = processedHeight;
   
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
+  const thresholdedCtx = thresholdedCanvas.getContext('2d', { willReadFrequently: true })!;
+  thresholdedCtx.imageSmoothingEnabled = true;
+  thresholdedCtx.imageSmoothingQuality = 'high';
+  thresholdedCtx.drawImage(img, 0, 0, processedWidth, processedHeight);
   
-  // Draw scaled image
-  ctx.drawImage(img, 0, 0, processedWidth, processedHeight);
+  // Apply thresholding
+  preprocessImageCanvas(thresholdedCanvas, aggressiveThreshold);
   
-  // Apply preprocessing
-  const processedCanvas = preprocessImageCanvas(canvas, aggressiveThreshold);
+  // Create grayscale canvas (non-thresholded for names)
+  const grayscaleCanvas = document.createElement('canvas');
+  grayscaleCanvas.width = processedWidth;
+  grayscaleCanvas.height = processedHeight;
+  
+  const grayscaleCtx = grayscaleCanvas.getContext('2d', { willReadFrequently: true })!;
+  grayscaleCtx.imageSmoothingEnabled = true;
+  grayscaleCtx.imageSmoothingQuality = 'high';
+  grayscaleCtx.drawImage(img, 0, 0, processedWidth, processedHeight);
+  
+  // Apply grayscale enhancement without binarization
+  preprocessGrayscale(grayscaleCanvas, aggressiveThreshold, false);
   
   return {
-    canvas: processedCanvas,
+    canvas: thresholdedCanvas,
+    grayscaleCanvas,
     originalWidth,
     originalHeight,
     processedWidth,
