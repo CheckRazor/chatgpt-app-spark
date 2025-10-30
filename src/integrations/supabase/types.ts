@@ -301,6 +301,7 @@ export type Database = {
           linked_player_id: string | null
           parsed_name: string
           parsed_score: number
+          parsed_score_big: number | null
           raw_score_text: string | null
           raw_text: string | null
           updated_at: string | null
@@ -317,6 +318,7 @@ export type Database = {
           linked_player_id?: string | null
           parsed_name: string
           parsed_score: number
+          parsed_score_big?: number | null
           raw_score_text?: string | null
           raw_text?: string | null
           updated_at?: string | null
@@ -333,6 +335,7 @@ export type Database = {
           linked_player_id?: string | null
           parsed_name?: string
           parsed_score?: number
+          parsed_score_big?: number | null
           raw_score_text?: string | null
           raw_text?: string | null
           updated_at?: string | null

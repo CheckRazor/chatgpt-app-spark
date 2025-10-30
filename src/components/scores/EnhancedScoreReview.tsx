@@ -100,19 +100,23 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    const rows = scoreRows.map(s => ({
-      event_id: eventId,
-      upload_id: s.uploadId,
-      parsed_name: s.parsedName,
-      parsed_score: s.parsedScore,
-      raw_text: s.rawText,
-      raw_score_text: s.parsedScore.toLocaleString(), // Store formatted version
-      corrected_value: s.correctedValue,
-      confidence: s.confidence,
-      linked_player_id: s.linkedPlayerId,
-      is_verified: s.isVerified,
-      image_source: s.imageSource,
-    }));
+    const rows = scoreRows.map(s => {
+      const digitsOnly = s.parsedScore.toString().replace(/[^\d]/g, '');
+      return {
+        event_id: eventId,
+        upload_id: s.uploadId,
+        parsed_name: s.parsedName,
+        parsed_score: s.parsedScore,
+        parsed_score_big: parseInt(digitsOnly) || 0,
+        raw_text: s.rawText,
+        raw_score_text: s.parsedScore.toLocaleString(),
+        corrected_value: s.correctedValue,
+        confidence: s.confidence,
+        linked_player_id: s.linkedPlayerId,
+        is_verified: s.isVerified,
+        image_source: s.imageSource,
+      };
+    });
 
     await supabase.from('ocr_rows').insert(rows);
   };
@@ -236,8 +240,8 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
 
       const playerMap = new Map(allPlayers?.map(p => [p.id, p]) || []);
 
-      // Resolve alts to mains and group by player, keep highest score
-      const playerScores = new Map<string, number>();
+      // Resolve alts to mains and group by player, keep highest score (BIGINT)
+      const playerScores = new Map<string, string>();
       let skippedCount = 0;
 
       verifiedScores.forEach(s => {
@@ -257,8 +261,13 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
           ? player.main_player_id 
           : s.linkedPlayerId;
 
-        const current = playerScores.get(finalPlayerId) || 0;
-        playerScores.set(finalPlayerId, Math.max(current, s.parsedScore));
+        const digitsOnly = s.parsedScore.toString().replace(/[^\d]/g, '');
+        const currentBig = BigInt(digitsOnly || '0');
+        const existingBig = BigInt(playerScores.get(finalPlayerId) || '0');
+        
+        if (currentBig > existingBig) {
+          playerScores.set(finalPlayerId, digitsOnly || '0');
+        }
       });
 
       if (playerScores.size === 0) {
@@ -281,12 +290,12 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
 
       if (batchError) throw batchError;
 
-      // Upsert scores
-      const scoreData = Array.from(playerScores.entries()).map(([playerId, score]) => ({
+      // Upsert scores with BIGINT
+      const scoreData = Array.from(playerScores.entries()).map(([playerId, scoreBig]) => ({
         event_id: eventId,
         player_id: playerId,
-        score,
-        raw_score: score,
+        score: parseInt(scoreBig.slice(0, 10)) || 0,
+        raw_score: parseInt(scoreBig) || 0,
         verified: true,
         created_by: user.id,
       }));
@@ -295,7 +304,10 @@ const EnhancedScoreReview = ({ eventId, parsedScores, canManage }: EnhancedScore
         onConflict: 'event_id,player_id',
       });
 
-      if (scoresError) throw scoresError;
+      if (scoresError) {
+        toast.error(`Database error: ${scoresError.message}`);
+        throw scoresError;
+      }
 
       toast.success(`✅ Committed ${playerScores.size} players.${skippedCount > 0 ? ` ⚠️ Skipped ${skippedCount} invalid rows.` : ''}`);
       

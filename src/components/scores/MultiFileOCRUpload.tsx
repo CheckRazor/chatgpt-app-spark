@@ -42,6 +42,7 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
   const [scaleOverride, setScaleOverride] = useState<number | undefined>(undefined);
   const [splitRatio, setSplitRatio] = useState(0.70);
   const [aggressiveThreshold, setAggressiveThreshold] = useState(false);
+  const [expectedRows, setExpectedRows] = useState<number | undefined>(undefined);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Load settings from localStorage
@@ -53,6 +54,7 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
         if (settings.scaleOverride) setScaleOverride(settings.scaleOverride);
         if (settings.splitRatio) setSplitRatio(settings.splitRatio);
         if (settings.aggressiveThreshold !== undefined) setAggressiveThreshold(settings.aggressiveThreshold);
+        if (settings.expectedRows !== undefined) setExpectedRows(settings.expectedRows || undefined);
       } catch (e) {
         console.error('Failed to load OCR settings', e);
       }
@@ -65,8 +67,9 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
       scaleOverride,
       splitRatio,
       aggressiveThreshold,
+      expectedRows,
     }));
-  }, [scaleOverride, splitRatio, aggressiveThreshold]);
+  }, [scaleOverride, splitRatio, aggressiveThreshold, expectedRows]);
 
   // Cleanup worker on unmount
   useEffect(() => {
@@ -118,6 +121,7 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
       const rows = await processTwoPassOCR(
         preprocessed.canvas,
         splitRatio,
+        expectedRows,
         (current, total) => {
           const progress = Math.round((current / total) * 100);
           setFiles(prev => prev.map((f, i) => 
@@ -292,6 +296,18 @@ const MultiFileOCRUpload = ({ eventId, onComplete, canManage }: MultiFileOCRUplo
                   min={0.6}
                   max={0.8}
                   step={0.05}
+                  className="w-full"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-sm">Expected Rows: {expectedRows || 'AUTO'}</Label>
+                <Slider
+                  value={[expectedRows || 0]}
+                  onValueChange={([v]) => setExpectedRows(v === 0 ? undefined : v)}
+                  min={0}
+                  max={12}
+                  step={1}
                   className="w-full"
                 />
               </div>

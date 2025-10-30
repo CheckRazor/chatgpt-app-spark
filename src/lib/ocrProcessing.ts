@@ -51,9 +51,9 @@ export const preprocessImage = async (file: File): Promise<string> => {
 };
 
 /**
- * Auto-correct common OCR mistakes in numeric values
+ * Auto-correct common OCR mistakes in numeric values (BIGINT support)
  */
-export const correctNumericOCR = (text: string): { value: number; corrected: boolean; confidence: number; rawText: string } => {
+export const correctNumericOCR = (text: string): { value: number; corrected: boolean; confidence: number; rawText: string; bigValue: string } => {
   let corrected = false;
   let workingText = text.trim();
   const originalText = workingText;
@@ -98,7 +98,8 @@ export const correctNumericOCR = (text: string): { value: number; corrected: boo
   }
   
   // Remove commas for final parsing
-  const numericValue = parseInt(workingText.replace(/,/g, ''), 10);
+  const digitsOnly = workingText.replace(/[^\d]/g, '');
+  const numericValue = parseInt(digitsOnly.slice(0, 10), 10); // Keep old for compat
   
   // Calculate confidence based on corrections made
   let confidence = 1.0;
@@ -108,14 +109,30 @@ export const correctNumericOCR = (text: string): { value: number; corrected: boo
   
   // Additional confidence adjustment based on value reasonableness
   if (numericValue < 100) confidence *= 0.7; // Very low scores are suspect
-  if (numericValue > 1000000000) confidence *= 0.5; // Very high scores are suspect
+  if (digitsOnly.length > 12) confidence *= 0.5; // Very high scores are suspect
   
   return {
     value: isNaN(numericValue) ? 0 : numericValue,
+    bigValue: digitsOnly || '0',
     corrected,
     confidence: Math.max(0, Math.min(1, confidence)),
     rawText: originalText,
   };
+};
+
+/**
+ * Parse comma-formatted number to BIGINT string
+ */
+export const parseScoreToBigInt = (text: string): string => {
+  // Remove all non-digits
+  return text.replace(/[^\d]/g, '') || '0';
+};
+
+/**
+ * Format bigint string as comma-separated
+ */
+export const formatBigIntWithCommas = (value: string): string => {
+  return value.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 };
 
 /**

@@ -55,13 +55,68 @@ export const calculateOptimalScale = (width: number, scaleOverride?: number): nu
   return 1.0;
 };
 
+export interface PreprocessResult {
+  canvas: HTMLCanvasElement;
+  confidence: number;
+  pipelineUsed: 'colorMask' | 'grayscale';
+}
+
 /**
- * Apply image preprocessing: grayscale, contrast, threshold, unsharp
+ * Color mask pipeline (extracts brown text on beige)
  */
-export const preprocessImageCanvas = (
+export const preprocessColorMask = (
   sourceCanvas: HTMLCanvasElement,
   aggressiveThreshold: boolean = false
-): HTMLCanvasElement => {
+): PreprocessResult => {
+  const ctx = sourceCanvas.getContext('2d', { willReadFrequently: true })!;
+  const imageData = ctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+  const data = imageData.data;
+  
+  // Step 1: Compute R-G (red minus green for brown text)
+  for (let i = 0; i < data.length; i += 4) {
+    const rMinusG = Math.max(0, data[i] - data[i + 1]);
+    data[i] = data[i + 1] = data[i + 2] = rMinusG;
+  }
+  
+  // Step 2: Normalize to [0..255]
+  let maxVal = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i] > maxVal) maxVal = data[i];
+  }
+  if (maxVal > 0) {
+    for (let i = 0; i < data.length; i += 4) {
+      const normalized = (data[i] / maxVal) * 255;
+      data[i] = data[i + 1] = data[i + 2] = normalized;
+    }
+  }
+  
+  // Step 3: Contrast boost
+  const gain = aggressiveThreshold ? 1.5 : 1.25;
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = Math.min(255, Math.max(0, (data[i] - 128) * gain + 128));
+    data[i + 1] = data[i];
+    data[i + 2] = data[i];
+  }
+  
+  // Step 4: Otsu threshold
+  const threshold = calculateOtsuThreshold(data);
+  for (let i = 0; i < data.length; i += 4) {
+    const value = data[i] > threshold ? 255 : 0;
+    data[i] = data[i + 1] = data[i + 2] = value;
+  }
+  
+  ctx.putImageData(imageData, 0, 0);
+  return { canvas: sourceCanvas, confidence: 0.5, pipelineUsed: 'colorMask' };
+};
+
+/**
+ * Grayscale pipeline (traditional)
+ */
+export const preprocessGrayscale = (
+  sourceCanvas: HTMLCanvasElement,
+  aggressiveThreshold: boolean = false,
+  binarize: boolean = true
+): PreprocessResult => {
   const ctx = sourceCanvas.getContext('2d', { willReadFrequently: true })!;
   const imageData = ctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
   const data = imageData.data;
@@ -73,25 +128,41 @@ export const preprocessImageCanvas = (
   }
   
   // Step 2: Contrast stretch
-  const gain = aggressiveThreshold ? 1.4 : 1.2;
+  const gain = aggressiveThreshold ? 1.4 : 1.3;
   for (let i = 0; i < data.length; i += 4) {
     data[i] = Math.min(255, Math.max(0, (data[i] - 128) * gain + 128));
     data[i + 1] = data[i];
     data[i + 2] = data[i];
   }
   
-  // Step 3: Adaptive threshold (Otsu-like)
-  const threshold = calculateOtsuThreshold(data);
-  for (let i = 0; i < data.length; i += 4) {
-    const value = data[i] > threshold ? 255 : 0;
-    data[i] = data[i + 1] = data[i + 2] = value;
+  if (binarize) {
+    // Step 3: Adaptive threshold
+    const threshold = calculateOtsuThreshold(data);
+    for (let i = 0; i < data.length; i += 4) {
+      const value = data[i] > threshold ? 255 : 0;
+      data[i] = data[i + 1] = data[i + 2] = value;
+    }
+  } else {
+    // Sharpen for non-binarized (NAME pass)
+    const sharpened = applyUnsharpMask(imageData, sourceCanvas.width, sourceCanvas.height, 1, 0.6);
+    ctx.putImageData(sharpened, 0, 0);
+    return { canvas: sourceCanvas, confidence: 0.5, pipelineUsed: 'grayscale' };
   }
   
-  // Step 4: Unsharp mask for edge enhancement
-  const sharpened = applyUnsharpMask(imageData, sourceCanvas.width, sourceCanvas.height);
-  
-  ctx.putImageData(sharpened, 0, 0);
-  return sourceCanvas;
+  ctx.putImageData(imageData, 0, 0);
+  return { canvas: sourceCanvas, confidence: 0.5, pipelineUsed: 'grayscale' };
+};
+
+/**
+ * Apply image preprocessing: choose best pipeline
+ */
+export const preprocessImageCanvas = (
+  sourceCanvas: HTMLCanvasElement,
+  aggressiveThreshold: boolean = false
+): HTMLCanvasElement => {
+  // For backward compatibility, use grayscale pipeline
+  const result = preprocessGrayscale(sourceCanvas, aggressiveThreshold, true);
+  return result.canvas;
 };
 
 /**

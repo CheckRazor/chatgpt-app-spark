@@ -42,65 +42,154 @@ export const terminateSharedWorker = async (): Promise<void> => {
 };
 
 /**
- * Segment image into horizontal row bands using projection profiling
+ * Smooth projection profile
  */
-export const segmentRows = (canvas: HTMLCanvasElement): RowSegment[] => {
+const smoothProjection = (projection: number[], windowSize: number = 9): number[] => {
+  const smoothed = new Array(projection.length).fill(0);
+  const halfWindow = Math.floor(windowSize / 2);
+  
+  for (let i = 0; i < projection.length; i++) {
+    let sum = 0;
+    let count = 0;
+    for (let j = Math.max(0, i - halfWindow); j < Math.min(projection.length, i + halfWindow + 1); j++) {
+      sum += projection[j];
+      count++;
+    }
+    smoothed[i] = sum / count;
+  }
+  
+  return smoothed;
+};
+
+/**
+ * Find valleys (separators) in projection profile
+ */
+const findValleys = (projection: number[], minGap: number = 6): number[] => {
+  const valleys: number[] = [];
+  const threshold = Math.max(...projection) * 0.1; // 10% of max
+  
+  let inValley = false;
+  let valleyStart = 0;
+  
+  for (let i = 0; i < projection.length; i++) {
+    if (projection[i] < threshold && !inValley) {
+      valleyStart = i;
+      inValley = true;
+    } else if (projection[i] >= threshold && inValley) {
+      const valleyMid = Math.floor((valleyStart + i) / 2);
+      valleys.push(valleyMid);
+      inValley = false;
+    }
+  }
+  
+  // Merge close valleys
+  const merged: number[] = [];
+  for (let i = 0; i < valleys.length; i++) {
+    if (merged.length === 0 || valleys[i] - merged[merged.length - 1] > minGap) {
+      merged.push(valleys[i]);
+    }
+  }
+  
+  return merged;
+};
+
+/**
+ * Segment image into horizontal row bands using robust projection profiling
+ */
+export const segmentRows = (
+  canvas: HTMLCanvasElement,
+  expectedRows?: number
+): RowSegment[] => {
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
   
-  // Calculate horizontal projection (white pixel count per row)
+  // Calculate horizontal projection (black pixel count per row for binarized)
   const projection = new Array(canvas.height).fill(0);
   
   for (let y = 0; y < canvas.height; y++) {
     for (let x = 0; x < canvas.width; x++) {
       const idx = (y * canvas.width + x) * 4;
-      // Count white pixels (text is black after threshold)
-      if (data[idx] === 255) {
+      // Count black pixels (text is black after threshold)
+      if (data[idx] === 0) {
         projection[y]++;
       }
     }
   }
   
-  // Find text bands (regions with significant white pixels)
-  const threshold = canvas.width * 0.05; // At least 5% of row has text
-  const segments: RowSegment[] = [];
-  let inBand = false;
-  let bandStart = 0;
+  // Smooth projection
+  const smoothed = smoothProjection(projection, 9);
   
-  for (let y = 0; y < canvas.height; y++) {
-    const hasText = projection[y] > threshold;
-    
-    if (hasText && !inBand) {
-      // Start of new band
-      bandStart = Math.max(0, y - 5); // Add padding
-      inBand = true;
-    } else if (!hasText && inBand) {
-      // End of band
-      const bandEnd = Math.min(canvas.height, y + 5); // Add padding
-      const height = bandEnd - bandStart;
-      
-      if (height > 20) { // Minimum height filter
+  // Find valleys
+  const valleys = findValleys(smoothed, 6);
+  
+  // Build segments from valleys
+  const minHeight = 56;
+  const segments: RowSegment[] = [];
+  
+  if (valleys.length >= 1 && (!expectedRows || valleys.length + 1 === expectedRows)) {
+    // Use valleys to define bands
+    let prevY = 0;
+    for (const valley of valleys) {
+      const height = valley - prevY;
+      if (height >= minHeight) {
         segments.push({
-          y: bandStart,
+          y: prevY,
           height,
-          canvas: cropCanvas(canvas, 0, bandStart, canvas.width, height),
+          canvas: cropCanvas(canvas, 0, prevY, canvas.width, height),
         });
       }
-      
-      inBand = false;
+      prevY = valley;
+    }
+    // Last segment
+    const height = canvas.height - prevY;
+    if (height >= minHeight) {
+      segments.push({
+        y: prevY,
+        height,
+        canvas: cropCanvas(canvas, 0, prevY, canvas.width, height),
+      });
     }
   }
   
-  // Handle case where band extends to end
-  if (inBand) {
-    const height = canvas.height - bandStart;
-    if (height > 20) {
-      segments.push({
-        y: bandStart,
-        height,
-        canvas: cropCanvas(canvas, 0, bandStart, canvas.width, height),
-      });
+  // Fallback: if unrealistic count or expectedRows set
+  if (segments.length < 2 || segments.length > 20 || (expectedRows && segments.length !== expectedRows)) {
+    const targetRows = expectedRows || Math.round(canvas.height / 80);
+    const sliceHeight = canvas.height / targetRows;
+    
+    segments.length = 0;
+    for (let i = 0; i < targetRows; i++) {
+      const idealY = Math.round(i * sliceHeight);
+      // Snap to nearest valley within ±20px
+      let snapY = idealY;
+      let minDist = 20;
+      for (const valley of valleys) {
+        const dist = Math.abs(valley - idealY);
+        if (dist < minDist) {
+          minDist = dist;
+          snapY = valley;
+        }
+      }
+      
+      const nextIdealY = Math.round((i + 1) * sliceHeight);
+      let snapNextY = nextIdealY;
+      minDist = 20;
+      for (const valley of valleys) {
+        const dist = Math.abs(valley - nextIdealY);
+        if (dist < minDist) {
+          minDist = dist;
+          snapNextY = valley;
+        }
+      }
+      
+      const height = snapNextY - snapY;
+      if (height >= minHeight && snapNextY <= canvas.height) {
+        segments.push({
+          y: snapY,
+          height,
+          canvas: cropCanvas(canvas, 0, snapY, canvas.width, height),
+        });
+      }
     }
   }
   
@@ -143,7 +232,7 @@ export const splitNameScore = (
 };
 
 /**
- * Run OCR on name region (text mode)
+ * Run OCR on name region (text mode with punctuation)
  */
 export const ocrNameRegion = async (
   canvas: HTMLCanvasElement,
@@ -151,7 +240,7 @@ export const ocrNameRegion = async (
 ): Promise<{ text: string; confidence: number }> => {
   await worker.setParameters({
     preserve_interword_spaces: '1',
-    tessedit_char_whitelist: '',
+    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .\'-:_†<>/',
   });
   
   const { data } = await worker.recognize(canvas, {
@@ -218,12 +307,13 @@ export const twoPassOCRRow = async (
 export const processTwoPassOCR = async (
   canvas: HTMLCanvasElement,
   splitRatio: number = 0.70,
+  expectedRows?: number,
   progressCallback?: (current: number, total: number) => void
 ): Promise<TwoPassResult[]> => {
   const worker = await getSharedWorker();
   
   // Segment into rows
-  let segments = segmentRows(canvas);
+  let segments = segmentRows(canvas, expectedRows);
   
   // Fallback: if no rows found, try simple full-page split
   if (segments.length === 0) {
