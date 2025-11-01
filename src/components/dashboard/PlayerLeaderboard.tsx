@@ -15,9 +15,11 @@ interface PlayerBalance {
 
 const PlayerLeaderboard = () => {
   const { data: balances, isLoading, error } = useQuery({
-    queryKey: ["player-balances"],
+    queryKey: ["player-balances-v2"],
     queryFn: async () => {
-      // Get all medals
+      //
+      // 1) medals (same as before)
+      //
       const { data: medals, error: medalsError } = await supabase
         .from("medals")
         .select("*")
@@ -25,29 +27,44 @@ const PlayerLeaderboard = () => {
 
       if (medalsError) throw medalsError;
 
-      const goldMedal = medals.find(m => m.name === "Gold");
-      const silverMedal = medals.find(m => m.name === "Silver");
-      const bronzeMedal = medals.find(m => m.name === "Bronze");
+      const goldMedal = medals.find((m) => m.name === "Gold");
+      const silverMedal = medals.find((m) => m.name === "Silver");
+      const bronzeMedal = medals.find((m) => m.name === "Bronze");
 
-      // Get all ledger transactions
+      //
+      // 2) pull ONLY ledger transactions that belong to ACTIVE (non-deleted) events
+      //    we INNER JOIN events and require events.deleted_at IS NULL
+      //
       const { data: transactions, error: txError } = await supabase
         .from("ledger_transactions")
-        .select(`
+        .select(
+          `
           player_id,
           medal_id,
           amount,
-          players!inner(canonical_name)
-        `);
+          event_id,
+          players!inner(canonical_name),
+          events!inner(id, deleted_at)
+        `
+        )
+        .is("events.deleted_at", null);
 
       if (txError) throw txError;
 
-      // Calculate balances
+      //
+      // 3) aggregate per player
+      //
       const balanceMap = new Map<string, PlayerBalance>();
 
-      transactions.forEach(tx => {
+      (transactions || []).forEach((tx: any) => {
+        // extra guard: if somehow an event got through without join
+        if (!tx.events || tx.events.deleted_at) {
+          return;
+        }
+
         const playerId = tx.player_id;
-        const playerName = (tx.players as any)?.canonical_name || "Unknown";
-        
+        const playerName = tx.players?.canonical_name || "Unknown";
+
         if (!balanceMap.has(playerId)) {
           balanceMap.set(playerId, {
             player_id: playerId,
@@ -60,7 +77,7 @@ const PlayerLeaderboard = () => {
         }
 
         const balance = balanceMap.get(playerId)!;
-        
+
         if (tx.medal_id === goldMedal?.id) {
           balance.gold += tx.amount;
           balance.total_value += tx.amount * (goldMedal?.value || 0);
@@ -73,7 +90,7 @@ const PlayerLeaderboard = () => {
         }
       });
 
-      // Convert to array and sort by total value
+      // 4) sort + limit
       return Array.from(balanceMap.values())
         .sort((a, b) => b.total_value - a.total_value)
         .slice(0, 10);

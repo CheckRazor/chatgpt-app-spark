@@ -1,3 +1,4 @@
+// src/pages/EventDetails.tsx
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
@@ -6,7 +7,14 @@ import Layout from "@/components/Layout";
 import EventTotals from "@/components/event-details/EventTotals";
 import RaffleManager from "@/components/event-details/RaffleManager";
 import LedgerView from "@/components/event-details/LedgerView";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import EventScoresList from "@/components/event-details/EventScoresList";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 
@@ -70,22 +78,35 @@ const EventDetails = () => {
           <CardHeader>
             <CardTitle>{event.name} - Management</CardTitle>
             <CardDescription>
-              Manage totals, raffles, and view ledger transactions
+              Manage totals, committed scores, raffles, and view ledger
+              transactions
             </CardDescription>
           </CardHeader>
           <CardContent>
             <Tabs defaultValue="totals">
-              <TabsList className="grid w-full grid-cols-3">
+              <TabsList className="grid w-full grid-cols-4">
                 <TabsTrigger value="totals">Event Totals</TabsTrigger>
+                <TabsTrigger value="scores">Committed Scores</TabsTrigger>
                 <TabsTrigger value="raffles">Raffles</TabsTrigger>
                 <TabsTrigger value="ledger">Ledger</TabsTrigger>
               </TabsList>
+
               <TabsContent value="totals" className="mt-6">
                 <EventTotals eventId={eventId!} canManage={canManage} />
               </TabsContent>
+
+              <TabsContent value="scores" className="mt-6">
+                <EventScoresList
+                  eventId={eventId!}
+                  eventName={event.name}
+                  canManage={canManage}
+                />
+              </TabsContent>
+
               <TabsContent value="raffles" className="mt-6">
                 <RaffleManager eventId={eventId!} canManage={canManage} />
               </TabsContent>
+
               <TabsContent value="ledger" className="mt-6">
                 <LedgerView eventId={eventId!} />
               </TabsContent>

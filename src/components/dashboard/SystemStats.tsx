@@ -6,20 +6,67 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 const SystemStats = () => {
   const { data: stats, isLoading } = useQuery({
-    queryKey: ["system-stats"],
+    queryKey: ["system-stats-v2"],
     queryFn: async () => {
-      const [playersRes, eventsRes, scoresRes, transactionsRes] = await Promise.all([
-        supabase.from("players").select("id", { count: "exact", head: true }).eq("status", "active"),
-        supabase.from("events").select("id", { count: "exact", head: true }).is("deleted_at", null),
-        supabase.from("scores").select("id", { count: "exact", head: true }),
-        supabase.from("ledger_transactions").select("id", { count: "exact", head: true }),
-      ]);
+      //
+      // 1) get ONLY active (non-deleted) events
+      //
+      const { data: eventsRes, error: eventsErr } = await supabase
+        .from("events")
+        .select("id")
+        .is("deleted_at", null);
+
+      if (eventsErr) throw eventsErr;
+
+      const activeEventIds = (eventsRes || []).map((e) => e.id);
+
+      //
+      // 2) players count (active only, same as before)
+      //
+      const { count: playersCount, error: playersErr } = await supabase
+        .from("players")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "active");
+
+      if (playersErr) throw playersErr;
+
+      //
+      // 3) events count = # of non-deleted events
+      //
+      const eventsCount = activeEventIds.length;
+
+      //
+      // 4) scores & transactions MUST be filtered to those events
+      //    if no active events → 0
+      //
+      let scoresCount = 0;
+      let transactionsCount = 0;
+
+      if (activeEventIds.length > 0) {
+        // scores tied to active events
+        const { count: sCount, error: sErr } = await supabase
+          .from("scores")
+          .select("id", { count: "exact", head: true })
+          .in("event_id", activeEventIds);
+
+        if (sErr) throw sErr;
+        scoresCount = sCount || 0;
+
+        // ledger tx tied to active events
+        const { count: tCount, error: tErr } = await supabase
+          .from("ledger_transactions")
+          .select("id", { count: "exact", head: true })
+          .in("event_id", activeEventIds);
+
+        if (tErr) throw tErr;
+        transactionsCount = tCount || 0;
+      }
 
       return {
-        players: playersRes.count || 0,
-        events: eventsRes.count || 0,
-        scores: scoresRes.count || 0,
-        transactions: transactionsRes.count || 0,
+        players: playersCount || 0,
+        events: eventsCount,
+        scores: scoresCount,
+        transactions: transactionsCount,
       };
     },
   });

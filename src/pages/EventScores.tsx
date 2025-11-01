@@ -16,10 +16,20 @@ import {
 } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import ExportButtons from "@/components/exports/ExportButtons";
 import { exportScoresCSV, formatDiscordLeaderboard } from "@/lib/exports";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const EventScores = () => {
   const { eventId } = useParams<{ eventId: string }>();
@@ -30,8 +40,10 @@ const EventScores = () => {
   const [committedScores, setCommittedScores] = useState<any[]>([]);
   const [parsedScores, setParsedScores] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<"upload" | "review">("upload");
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-  // load event + existing scores the simple way (no react-query)
+  // load event + existing scores
   useEffect(() => {
     const load = async () => {
       if (!eventId) return;
@@ -42,7 +54,7 @@ const EventScores = () => {
         .eq("id", eventId)
         .maybeSingle();
 
-      if (evErr) {
+      if (evErr || !ev) {
         toast.error("Event not found");
         navigate("/events");
         return;
@@ -83,11 +95,33 @@ const EventScores = () => {
 
   const canManage = isAdmin || isLeader;
 
-  // 👇 this is what the uploader will call
   const handleOCRProcessed = (rows: any[]) => {
     setParsedScores(rows);
     setActiveTab("review");
     toast.success(`Loaded ${rows.length} rows for review`);
+  };
+
+  // SOFT DELETE
+  const handleDeleteEvent = async () => {
+    if (!eventId) return;
+    setDeleting(true);
+    try {
+      // prefer soft delete
+      const { error } = await supabase
+        .from("events")
+        .update({ deleted_at: new Date().toISOString() })
+        .eq("id", eventId);
+
+      if (error) throw error;
+
+      toast.success("Event deleted");
+      navigate("/events");
+    } catch (err: any) {
+      toast.error(`Failed to delete event: ${err.message}`);
+    } finally {
+      setDeleting(false);
+      setShowDeleteDialog(false);
+    }
   };
 
   return (
@@ -134,6 +168,15 @@ const EventScores = () => {
                   <ArrowLeft className="mr-2 h-4 w-4" />
                   Back to Events
                 </Button>
+                {canManage && (
+                  <Button
+                    variant="destructive"
+                    onClick={() => setShowDeleteDialog(true)}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Delete Event
+                  </Button>
+                )}
               </div>
             </div>
           </CardHeader>
@@ -149,7 +192,6 @@ const EventScores = () => {
 
               <TabsContent value="upload" className="mt-6">
                 <MultiFileOCRUpload
-                  // 👇 these two are why TS yelled — we add them to component next
                   eventId={eventId!}
                   canManage={canManage}
                   onProcessed={handleOCRProcessed}
@@ -167,6 +209,33 @@ const EventScores = () => {
           </CardContent>
         </Card>
       </div>
+
+      {/* delete confirm */}
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this event?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will mark the event as deleted. Existing scores/ocr rows will
+              stay in the database. You can filter deleted events out of the
+              list view.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteEvent}
+              disabled={deleting}
+              className="bg-destructive text-white hover:bg-destructive/90"
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              {deleting ? "Deleting..." : "Delete Event"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Layout>
   );
 };

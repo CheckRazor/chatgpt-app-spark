@@ -1,3 +1,4 @@
+// src/components/scores/EnhancedScoreReview.tsx
 import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -48,9 +49,11 @@ import {
 interface Player {
   id: string;
   canonical_name: string;
-  aliases: string[];
+  aliases: string[] | null;
   is_alt: boolean;
   main_player_id?: string | null;
+  status?: string | null;
+  deleted_at?: string | null;
 }
 
 interface ScoreRow {
@@ -61,11 +64,11 @@ interface ScoreRow {
   correctedValue: number | null;
   confidence: number;
   imageSource: string;
-  uploadId?: string;
-  linkedPlayerId?: string;
+  uploadId?: string | null;
+  linkedPlayerId?: string | null;
   isVerified: boolean;
   scoreError?: string;
-  bigScore?: string; // bigint-safe digits string from OCR
+  bigScore?: string;
   metadata?: {
     nameConfidence?: number;
     scoreConfidence?: number;
@@ -86,6 +89,50 @@ interface EnhancedScoreReviewProps {
   canManage: boolean;
 }
 
+const PG_INT_MAX = 2147483647;
+const AUTO_VERIFY_CONFIDENCE = 0.5;
+
+const isUuid = (val: string | null | undefined) => {
+  if (!val) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    val
+  );
+};
+
+const toIntSafe = (digits: string | number | null | undefined): number => {
+  if (digits === null || digits === undefined) return 0;
+  if (typeof digits === "number") {
+    return digits > PG_INT_MAX ? PG_INT_MAX : digits;
+  }
+  const n = parseInt(digits.replace(/[^\d]/g, "").slice(0, 10), 10) || 0;
+  return n > PG_INT_MAX ? PG_INT_MAX : n;
+};
+
+const normalize = (s: string) =>
+  s
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ");
+
+const matchPlayerLocal = (name: string, players: Player[]) => {
+  if (!name) return null;
+  const n = normalize(name);
+
+  const exact = players.find((p) => normalize(p.canonical_name) === n);
+  if (exact) return exact;
+
+  for (const p of players) {
+    if (p.aliases && p.aliases.some((a) => normalize(a) === n)) {
+      return p;
+    }
+  }
+
+  const fuzzy = players.find((p) => normalize(p.canonical_name).startsWith(n));
+  if (fuzzy) return fuzzy;
+
+  return null;
+};
+
 const EnhancedScoreReview = ({
   eventId,
   parsedScores,
@@ -98,46 +145,7 @@ const EnhancedScoreReview = ({
   const [loading, setLoading] = useState(false);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
-  useEffect(() => {
-    fetchPlayers();
-  }, []);
-
-  useEffect(() => {
-    if (parsedScores && parsedScores.length > 0) {
-      const mapped: ScoreRow[] = parsedScores.map((s: any) => {
-        const suggestedPlayer = findMatchingPlayer(s.parsedName);
-        return {
-          ...s,
-          parsedName: s.parsedName ?? s.name ?? "",
-          parsedScore:
-            typeof s.parsedScore === "number"
-              ? s.parsedScore
-              : parseInt(s.bigScore || "0", 10) || 0,
-          bigScore:
-            s.bigScore ||
-            s.parsedScore?.toString()?.replace(/[^\d]/g, "") ||
-            "0",
-          linkedPlayerId: suggestedPlayer?.id,
-          isVerified: false,
-        };
-      });
-      setScores(mapped);
-      // fire and forget
-      saveToOCRRows(mapped);
-    }
-  }, [parsedScores]);
-
-  const fetchPlayers = async () => {
-    const { data } = await supabase
-      .from("players")
-      .select("id, canonical_name, aliases, is_alt, main_player_id")
-      .is("deleted_at", null)
-      .order("canonical_name");
-
-    if (data) setPlayers(data);
-  };
-
-  // save raw OCR rows for audit/debug
+  // ====== save OCR rows (audit) ======
   const saveToOCRRows = async (scoreRows: ScoreRow[]) => {
     const {
       data: { user },
@@ -147,80 +155,141 @@ const EnhancedScoreReview = ({
     const rows = scoreRows.map((s) => {
       const digitsOnly =
         s.bigScore ||
-        s.parsedScore.toString().replace(/[^\d]/g, "") ||
+        s.parsedScore?.toString().replace(/[^\d]/g, "") ||
         "0";
+
+      const smallParsed =
+        typeof s.parsedScore === "number"
+          ? Math.min(s.parsedScore, PG_INT_MAX)
+          : 0;
 
       return {
         event_id: eventId,
-        upload_id: s.uploadId ?? null,
+        upload_id: isUuid(s.uploadId as any) ? s.uploadId : null,
         parsed_name: s.parsedName ?? "",
-        parsed_score: s.parsedScore ?? 0,
-        // our DB type may be numeric/bigint, but we want to keep
-        // the string version — so we cast through any on insert
+        parsed_score: smallParsed,
         parsed_score_big: digitsOnly,
         raw_text: s.rawText ?? "",
-        raw_score_text: s.bigScore
-          ? s.bigScore.replace(/\B(?=(\d{3})+(?!\d))/g, ",")
-          : (s.parsedScore ?? 0).toLocaleString(),
+        raw_score_text: digitsOnly.replace(/\B(?=(\d{3})+(?!\d))/g, ","),
         corrected_value: s.correctedValue,
         confidence: s.confidence ?? 0,
         linked_player_id: s.linkedPlayerId ?? null,
         is_verified: s.isVerified ?? false,
         image_source: s.imageSource ?? "",
-        created_by: user.id,
       };
     });
 
-    // 👇 TS fix: our supabase types think parsed_score_big is numeric
-    // but we're providing a string for bigint-safety. Cast to any.
     const { error } = await supabase.from("ocr_rows").insert(rows as any);
     if (error) {
-      console.warn("Failed to save ocr_rows:", error.message);
+      console.warn("Failed to save ocr_rows:", error.message, rows);
     }
   };
 
-  const findMatchingPlayer = (name: string) => {
-    if (!name) return null;
-    const normalized = name.toLowerCase().trim();
-    return players.find(
-      (p) =>
-        p.canonical_name.toLowerCase() === normalized ||
-        p.aliases?.some((a) => a.toLowerCase() === normalized)
-    );
-  };
+  // ====== load players ======
+  useEffect(() => {
+    const fetchPlayers = async () => {
+      const { data } = await supabase
+        .from("players")
+        .select(
+          "id, canonical_name, aliases, is_alt, main_player_id, status, deleted_at"
+        )
+        .is("deleted_at", null)
+        .order("canonical_name");
+      if (data) setPlayers(data as Player[]);
+    };
+    fetchPlayers();
+  }, []);
 
+  // ====== map incoming OCR ======
+  useEffect(() => {
+    if (!parsedScores || parsedScores.length === 0) return;
+
+    const mapped: ScoreRow[] = parsedScores.map((s: any) => {
+      const parsedName = s.parsedName ?? s.name ?? "";
+      const bigScore =
+        s.bigScore ||
+        s.parsedScore?.toString()?.replace(/[^\d]/g, "") ||
+        "0";
+
+      const parsedScore =
+        typeof s.parsedScore === "number"
+          ? s.parsedScore
+          : parseInt(bigScore || "0", 10) || 0;
+
+      const suggested = matchPlayerLocal(parsedName, players);
+      const hasDigits = /\d/.test(bigScore);
+      const autoVerified =
+        !!suggested?.id &&
+        (s.confidence ?? 0) >= AUTO_VERIFY_CONFIDENCE &&
+        hasDigits;
+
+      return {
+        ...s,
+        parsedName,
+        parsedScore,
+        bigScore,
+        linkedPlayerId: suggested?.id ?? undefined,
+        isVerified: autoVerified,
+      } as ScoreRow;
+    });
+
+    setScores(mapped);
+    saveToOCRRows(mapped);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedScores, players, eventId]);
+
+  // ====== handlers ======
   const handlePlayerSelect = (index: number, playerId: string) => {
     setScores((prev) =>
       prev.map((s, i) =>
-        i === index ? { ...s, linkedPlayerId: playerId } : s
+        i === index
+          ? {
+              ...s,
+              linkedPlayerId: playerId,
+              isVerified:
+                (s.confidence ?? 0) >= AUTO_VERIFY_CONFIDENCE &&
+                !!playerId &&
+                !s.scoreError &&
+                /\d/.test(s.bigScore || ""),
+            }
+          : s
       )
     );
   };
 
   const handleNameChange = (index: number, value: string) => {
     setScores((prev) =>
-      prev.map((s, i) => (i === index ? { ...s, parsedName: value } : s))
+      prev.map((s, i) =>
+        i === index
+          ? {
+              ...s,
+              parsedName: value,
+              isVerified: false,
+              linkedPlayerId: undefined,
+            }
+          : s
+      )
     );
   };
 
   const handleScoreChange = (index: number, value: string) => {
-    const isValid =
-      /^\d{1,3}(,\d{3})*$/.test(value.trim()) || value.trim() === "";
-
-    const numericValue = value.replace(/,/g, "");
-    const parsedNum = parseInt(numericValue) || 0;
+    const raw = value ?? "";
+    const clean = raw.replace(/[\s\u00A0]/g, "");
+    const digitsOnly = clean.replace(/[^\d]/g, "");
+    const hasDigits = /^\d+$/.test(digitsOnly);
 
     setScores((prev) =>
       prev.map((s, i) =>
         i === index
           ? {
               ...s,
-              parsedScore: parsedNum,
-              bigScore: numericValue || "0",
-              scoreError:
-                !isValid && value.trim()
-                  ? "Invalid number format"
-                  : undefined,
+              parsedScore: hasDigits ? toIntSafe(digitsOnly) : 0,
+              bigScore: hasDigits ? digitsOnly : "0",
+              scoreError: hasDigits ? undefined : "Invalid number format",
+              isVerified:
+                s.linkedPlayerId &&
+                hasDigits &&
+                (s.confidence ?? 0) >= AUTO_VERIFY_CONFIDENCE,
             }
           : s
       )
@@ -230,7 +299,12 @@ const EnhancedScoreReview = ({
   const handleVerify = (index: number) => {
     setScores((prev) =>
       prev.map((s, i) =>
-        i === index ? { ...s, isVerified: !s.isVerified } : s
+        i === index
+          ? {
+              ...s,
+              isVerified: s.linkedPlayerId ? !s.isVerified : false,
+            }
+          : s
       )
     );
   };
@@ -238,7 +312,9 @@ const EnhancedScoreReview = ({
   const bulkApproveHighConfidence = () => {
     setScores((prev) =>
       prev.map((s) =>
-        s.confidence >= 0.95 && s.linkedPlayerId
+        s.linkedPlayerId &&
+        !s.scoreError &&
+        (s.confidence ?? 0) >= AUTO_VERIFY_CONFIDENCE
           ? { ...s, isVerified: true }
           : s
       )
@@ -270,10 +346,8 @@ const EnhancedScoreReview = ({
 
     scores.forEach((score) => {
       if (!score.linkedPlayerId) return;
-
       const existing = playerMap.get(score.linkedPlayerId);
       const currentBig = BigInt(score.bigScore || "0");
-
       if (!existing) {
         playerMap.set(score.linkedPlayerId, score);
       } else {
@@ -337,26 +411,24 @@ const EnhancedScoreReview = ({
           return;
         }
 
-        const player = playerMap.get(s.linkedPlayerId);
-        if (!player) {
+        const p = playerMap.get(s.linkedPlayerId);
+        if (!p) {
           skippedCount++;
           return;
         }
 
         const finalPlayerId =
-          player.is_alt && player.main_player_id
-            ? player.main_player_id
-            : s.linkedPlayerId;
+          p.is_alt && p.main_player_id ? p.main_player_id : s.linkedPlayerId;
 
-        const digitsOnly =
+        const digits =
           s.bigScore ||
           s.parsedScore.toString().replace(/[^\d]/g, "") ||
           "0";
-        const currentBig = BigInt(digitsOnly);
-        const existingBig = BigInt(playerScores.get(finalPlayerId) || "0");
 
+        const currentBig = BigInt(digits);
+        const existingBig = BigInt(playerScores.get(finalPlayerId) || "0");
         if (currentBig > existingBig) {
-          playerScores.set(finalPlayerId, digitsOnly);
+          playerScores.set(finalPlayerId, digits);
         }
       });
 
@@ -366,57 +438,52 @@ const EnhancedScoreReview = ({
         return;
       }
 
-      const { data: batchOp, error: batchError } = await supabase
-        .from("batch_operations")
-        .insert({
-          operation_type: "ocr_import",
-          event_id: eventId,
-          created_by: user.id,
-          metadata: { score_count: playerScores.size },
-        })
-        .select()
-        .single();
-
-      if (batchError) throw batchError;
-
-      const scoreData = Array.from(playerScores.entries()).map(
-        ([playerId, scoreBig]) => ({
-          event_id: eventId,
-          player_id: playerId,
-          score: scoreBig, // string → DB casts
-          raw_score: scoreBig,
-          verified: true,
-          created_by: user.id,
-        })
+      const payload = Array.from(playerScores.entries()).map(
+        ([playerId, fullDigits]) => {
+          const clean = fullDigits.replace(/[^\d]/g, "") || "0";
+          return {
+            event_id: eventId,
+            player_id: playerId,
+            score: clean,
+            raw_score: clean,
+            verified: true,
+            created_by: user.id,
+          };
+        }
       );
 
-      // 👇 same trick: our generated types may say "number", but we want string
-      const { error: scoresError } = await supabase
-        .from("scores")
-        .upsert(scoreData as any, {
-          onConflict: "event_id,player_id",
-        });
+      // *** IMPORTANT: only call the RPC, do NOT fall back to /scores ***
+      const { data: rpcData, error: rpcError } = await (supabase as any).rpc(
+        "upsert_scores_big_v2",
+        {
+          payload,
+        }
+      );
 
-      if (scoresError) {
-        toast.error(`Database error: ${scoresError.message}`);
-        throw scoresError;
+      if (rpcError) {
+        console.error("RPC error:", rpcError);
+        throw rpcError;
       }
 
+      const committed = rpcData?.committed ?? 0;
+      const skipped = rpcData?.skipped ?? 0;
+
       toast.success(
-        `✅ Committed ${playerScores.size} players.${
-          skippedCount > 0 ? ` ⚠️ Skipped ${skippedCount} invalid rows.` : ""
+        `✅ Committed ${committed} players.${
+          skipped > 0 ? ` Skipped ${skipped} rows.` : ""
         }`
       );
-
       setScores([]);
       setShowCommitDialog(false);
-    } catch (error: any) {
-      toast.error("Failed to commit scores: " + error.message);
+    } catch (err: any) {
+      console.error("Commit error:", err);
+      toast.error("Failed to commit scores: " + err.message);
     } finally {
       setLoading(false);
     }
   };
 
+  // ====== render ======
   const filteredScores = searchTerm
     ? scores.filter((s) => {
         const name = s.parsedName || "";
@@ -445,15 +512,17 @@ const EnhancedScoreReview = ({
 
   const verifiedCount = scores.filter((s) => s.isVerified).length;
   const highConfidenceCount = scores.filter(
-    (s) => s.confidence >= 0.95 && s.linkedPlayerId && !s.isVerified
+    (s) =>
+      (s.confidence ?? 0) >= AUTO_VERIFY_CONFIDENCE &&
+      s.linkedPlayerId &&
+      !s.isVerified &&
+      !s.scoreError
   ).length;
   const hasErrors = scores.some((s) => s.scoreError);
-  const allVerifiedAndLinked = scores.every(
-    (s) => s.isVerified && s.linkedPlayerId
-  );
 
   return (
     <div className="space-y-4">
+      {/* top actions */}
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -487,11 +556,13 @@ const EnhancedScoreReview = ({
             onClick={bulkApproveHighConfidence}
           >
             <CheckCircle className="mr-2 h-4 w-4" />
-            Bulk Approve ≥95% ({highConfidenceCount})
+            Bulk Approve ≥{Math.round(AUTO_VERIFY_CONFIDENCE * 100)}% (
+            {highConfidenceCount})
           </Button>
         )}
       </div>
 
+      {/* table */}
       <div className="rounded-lg border overflow-hidden">
         <Table>
           <TableHeader>
@@ -607,8 +678,8 @@ const EnhancedScoreReview = ({
                     {score.metadata && (
                       <div className="mt-1">
                         {score.metadata.originalWidth}×
-                        {score.metadata.originalHeight}px{" "}
-                        (scale {score.metadata.scaleFactor?.toFixed(2)}×)
+                        {score.metadata.originalHeight}px (scale{" "}
+                        {score.metadata.scaleFactor?.toFixed(2)}×)
                       </div>
                     )}
                   </TableCell>
@@ -727,6 +798,7 @@ const EnhancedScoreReview = ({
         </Table>
       </div>
 
+      {/* footer */}
       <div className="flex justify-between items-center">
         <div className="text-sm text-muted-foreground">
           {verifiedCount} of {scores.length} scores verified
@@ -737,7 +809,7 @@ const EnhancedScoreReview = ({
             verifiedCount === 0 ||
             loading ||
             hasErrors ||
-            !allVerifiedAndLinked
+            !scores.some((s) => s.isVerified && s.linkedPlayerId)
           }
           size="lg"
         >

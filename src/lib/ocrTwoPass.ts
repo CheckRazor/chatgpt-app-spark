@@ -190,15 +190,16 @@ export const runAvalonLeaderboardOCR = async (file: File): Promise<any[]> => {
   const img = await loadImageFromFile(file);
   const base = imageToCanvas(img);
 
+  // 1) detect rows
   const seps = detectSeparatorLines(base);
   const rowRects = makeRowRects(base, seps);
 
   const out: any[] = [];
 
   for (const rect of rowRects) {
-    // row slice, padded a little vertically
+    // 2) take the raw row with a tiny outside pad
     const padY = 2;
-    const rowCanvas = cropCanvas(
+    const rawRow = cropCanvas(
       base,
       0,
       Math.max(0, rect.y - padY),
@@ -206,33 +207,53 @@ export const runAvalonLeaderboardOCR = async (file: File): Promise<any[]> => {
       Math.min(base.height - rect.y + padY, rect.height + padY * 2)
     );
 
-    // wider name and score regions
-    const totalW = base.width;
-    const nameX = 4; // start almost at the left
-    const nameW = Math.floor(totalW * 0.5); // give it half
-    const scoreW = Math.floor(totalW * 0.38); // slightly wider than before
-    const scoreX = totalW - scoreW - 6;
-
-    const nameCanvas = cropCanvas(rowCanvas, nameX, 0, nameW, rowCanvas.height);
-    const scoreCanvas = cropCanvas(rowCanvas, scoreX, 0, scoreW, rowCanvas.height);
-
-    // OCR
-    const nameRes = await recognizeCanvas(nameCanvas, 7 /* single line */);
-    const scoreRes = await recognizeCanvas(
-      scoreCanvas,
-      7,
-      "0123456789,"
+    // 3) hard-trim inside the row to drop the dark horizontal lines
+    const ROW_TOP_CUT = 8;     // bump to 6 if you still see the bar
+    const ROW_BOTTOM_CUT = 14;
+    const cleanRowHeight = Math.max(
+      16,
+      rawRow.height - ROW_TOP_CUT - ROW_BOTTOM_CUT
+    );
+    const rowCanvas = cropCanvas(
+      rawRow,
+      0,
+      ROW_TOP_CUT,
+      rawRow.width,
+      cleanRowHeight
     );
 
+    // 4) column crops (use the row width, not the base width)
+    const totalW = rowCanvas.width;
+    const nameX = 4;
+    const nameW = Math.floor(totalW * 0.5);   // left half for names
+
+    const scoreW = Math.floor(totalW * 0.38); // right 38% for score
+    const scoreX = totalW - scoreW - 4;       // pull back a few px
+
+    const nameCanvas = cropCanvas(rowCanvas, nameX, 0, nameW, rowCanvas.height);
+    const scoreCanvas = cropCanvas(
+      rowCanvas,
+      scoreX,
+      0,
+      scoreW,
+      rowCanvas.height
+    );
+
+    // 5) OCR
+    const nameRes = await recognizeCanvas(nameCanvas, 7 /* single line */);
+    const scoreRes = await recognizeCanvas(scoreCanvas, 7, "0123456789,");
+
+    // 6) normalize score
     const rawScore = (scoreRes.text || "").replace(/\s+/g, "");
     const digitsOnly = rawScore.replace(/[^\d]/g, "");
     const parsedScore = digitsOnly ? parseInt(digitsOnly, 10) : 0;
 
-    // confidence: bias toward name
+    // 7) combined confidence (bias to name)
     const nameConf = (nameRes.confidence || 0) / 100;
     const scoreConf = (scoreRes.confidence || 0) / 100;
     const combined = Math.min(1, nameConf * 0.7 + scoreConf * 0.3);
 
+    // 8) push row
     out.push({
       parsedName: (nameRes.text || "").trim(),
       parsedScore,
