@@ -407,12 +407,14 @@ const EnhancedScoreReview = ({
 
       verifiedScores.forEach((s) => {
         if (!s.linkedPlayerId) {
+          console.warn("Skipping score - no linked player:", s.parsedName);
           skippedCount++;
           return;
         }
 
         const p = playerMap.get(s.linkedPlayerId);
         if (!p) {
+          console.warn("Skipping score - player not found:", s.linkedPlayerId);
           skippedCount++;
           return;
         }
@@ -420,15 +422,25 @@ const EnhancedScoreReview = ({
         const finalPlayerId =
           p.is_alt && p.main_player_id ? p.main_player_id : s.linkedPlayerId;
 
-        const digits =
-          s.bigScore ||
-          s.parsedScore.toString().replace(/[^\d]/g, "") ||
-          "0";
+        // Always use bigScore for large numbers (up to 30 digits)
+        const digits = s.bigScore || "0";
+        
+        // Ensure we have valid digits (allow 0 for now)
+        if (!digits || !/^\d+$/.test(digits)) {
+          console.warn("Skipping score - invalid digits:", s.parsedName, digits);
+          skippedCount++;
+          return;
+        }
 
-        const currentBig = BigInt(digits);
-        const existingBig = BigInt(playerScores.get(finalPlayerId) || "0");
-        if (currentBig > existingBig) {
-          playerScores.set(finalPlayerId, digits);
+        try {
+          const currentBig = BigInt(digits);
+          const existingBig = BigInt(playerScores.get(finalPlayerId) || "0");
+          if (currentBig > existingBig) {
+            playerScores.set(finalPlayerId, digits);
+          }
+        } catch (err) {
+          console.error("Error processing BigInt for:", s.parsedName, digits, err);
+          skippedCount++;
         }
       });
 
@@ -440,17 +452,20 @@ const EnhancedScoreReview = ({
 
       const payload = Array.from(playerScores.entries()).map(
         ([playerId, fullDigits]) => {
-          const clean = fullDigits.replace(/[^\d]/g, "") || "0";
+          // fullDigits is already clean digits-only string (1-30 digits)
           return {
             event_id: eventId,
             player_id: playerId,
-            score: clean,
-            raw_score: clean,
+            score: fullDigits, // Keep as string for numeric(30,0)
+            raw_score: fullDigits, // Keep as string for numeric(30,0)
             verified: true,
             created_by: user.id,
           };
         }
       );
+      
+      console.log(`Committing ${payload.length} scores (${verifiedScores.length} verified, ${skippedCount} skipped)`);
+      console.log("Sample payload:", payload.slice(0, 2));
 
       // Try RPC first, then fallback to direct upsert
       try {
@@ -468,6 +483,12 @@ const EnhancedScoreReview = ({
 
         const committed = rpcData?.committed ?? 0;
         const skipped = rpcData?.skipped ?? 0;
+
+        console.log("RPC result:", { committed, skipped, total: payload.length });
+        
+        if (skipped > 0) {
+          console.warn(`⚠️ ${skipped} rows were skipped by the database. Check server logs for details.`);
+        }
 
         toast.success(
           `✅ Committed ${committed} players.${
