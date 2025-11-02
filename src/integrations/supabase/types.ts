@@ -775,6 +775,7 @@ export type Database = {
         }
         Returns: boolean
       }
+      upsert_scores_big_v2: { Args: { payload: Json }; Returns: Json }
     }
     Enums: {
       app_role: "admin" | "leader" | "viewer"

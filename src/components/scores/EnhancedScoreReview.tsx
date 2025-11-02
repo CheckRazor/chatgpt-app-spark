@@ -452,32 +452,68 @@ const EnhancedScoreReview = ({
         }
       );
 
-      // *** IMPORTANT: only call the RPC, do NOT fall back to /scores ***
-      const { data: rpcData, error: rpcError } = await (supabase as any).rpc(
-        "upsert_scores_big_v2",
-        {
-          payload,
+      // Try RPC first, then fallback to direct upsert
+      try {
+        const { data: rpcData, error: rpcError } = await (supabase as any).rpc(
+          "upsert_scores_big_v2",
+          {
+            payload,
+          }
+        );
+
+        if (rpcError) {
+          console.warn("RPC failed, falling back to direct upsert:", rpcError);
+          throw rpcError;
         }
-      );
 
-      if (rpcError) {
-        console.error("RPC error:", rpcError);
-        throw rpcError;
+        const committed = rpcData?.committed ?? 0;
+        const skipped = rpcData?.skipped ?? 0;
+
+        toast.success(
+          `✅ Committed ${committed} players.${
+            skipped > 0 ? ` Skipped ${skipped} rows.` : ""
+          }`
+        );
+        setScores([]);
+        setShowCommitDialog(false);
+      } catch (rpcErr: any) {
+        // Fallback to direct upsert if RPC is missing or schema didn't reload
+        console.log("Attempting direct upsert fallback...");
+        
+        const { error: upsertErr } = await supabase
+          .from("scores")
+          .upsert(
+            payload.map((row) => ({
+              ...row,
+              // Cast to number for TypeScript, PostgREST will handle large numbers correctly
+              score: Number(row.score),
+              raw_score: Number(row.raw_score),
+            })) as any,
+            { onConflict: "event_id,player_id" }
+          );
+
+        if (upsertErr) {
+          console.error("Direct upsert also failed:", upsertErr);
+          throw upsertErr;
+        }
+
+        toast.success(
+          `✅ Committed ${payload.length} scores via fallback method`
+        );
+        setScores([]);
+        setShowCommitDialog(false);
       }
-
-      const committed = rpcData?.committed ?? 0;
-      const skipped = rpcData?.skipped ?? 0;
-
-      toast.success(
-        `✅ Committed ${committed} players.${
-          skipped > 0 ? ` Skipped ${skipped} rows.` : ""
-        }`
-      );
-      setScores([]);
-      setShowCommitDialog(false);
     } catch (err: any) {
       console.error("Commit error:", err);
-      toast.error("Failed to commit scores: " + err.message);
+      
+      // Check for integer overflow error (22003)
+      if (err.code === "22003" || err.message?.includes("out of range for type integer")) {
+        toast.error(
+          "⚠️ Supabase tried to coerce a very large score into an integer. DB function probably not reloaded yet. Please re-run commit in 5s."
+        );
+      } else {
+        toast.error("Failed to commit scores: " + err.message);
+      }
     } finally {
       setLoading(false);
     }
