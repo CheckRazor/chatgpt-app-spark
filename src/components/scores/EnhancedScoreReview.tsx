@@ -483,12 +483,7 @@ const EnhancedScoreReview = ({
         const { error: upsertErr } = await supabase
           .from("scores")
           .upsert(
-            payload.map((row) => ({
-              ...row,
-              // Cast to number for TypeScript, PostgREST will handle large numbers correctly
-              score: Number(row.score),
-              raw_score: Number(row.raw_score),
-            })) as any,
+            payload as any,
             { onConflict: "event_id,player_id" }
           );
 
