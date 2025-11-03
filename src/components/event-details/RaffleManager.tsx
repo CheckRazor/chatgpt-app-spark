@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Card } from "@/components/ui/card";
 import { Shuffle, Trophy, Copy } from "lucide-react";
 import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 
 interface Medal {
   id: string;
@@ -23,6 +24,13 @@ interface Raffle {
   medals?: Medal;
 }
 
+interface RaffleWinner {
+  player_id: string;
+  player_name: string;
+  prize_amount: number;
+  created_at: string;
+}
+
 interface RaffleManagerProps {
   eventId: string;
   canManage: boolean;
@@ -33,6 +41,7 @@ const RAFFLE_WIN_AMOUNT = 25000000; // 25M medals per win
 const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
   const [medals, setMedals] = useState<Medal[]>([]);
   const [raffles, setRaffles] = useState<Raffle[]>([]);
+  const [raffleWinners, setRaffleWinners] = useState<Record<string, RaffleWinner[]>>({});
   const [newRaffle, setNewRaffle] = useState({
     name: "",
     medalId: "",
@@ -54,7 +63,34 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
       .from("raffles")
       .select("*, medals(*)")
       .eq("event_id", eventId);
-    if (data) setRaffles(data);
+    if (data) {
+      setRaffles(data);
+      // Fetch winners for completed raffles
+      for (const raffle of data) {
+        if (raffle.status === "completed") {
+          fetchRaffleWinners(raffle.id);
+        }
+      }
+    }
+  };
+
+  const fetchRaffleWinners = async (raffleId: string) => {
+    const { data } = await supabase
+      .from("raffle_entries")
+      .select("player_id, prize_amount, created_at, players(canonical_name)")
+      .eq("raffle_id", raffleId)
+      .eq("is_winner", true)
+      .order("created_at", { ascending: true });
+
+    if (data) {
+      const winners = data.map(entry => ({
+        player_id: entry.player_id,
+        player_name: (entry.players as any)?.canonical_name || "Unknown",
+        prize_amount: entry.prize_amount || 0,
+        created_at: entry.created_at,
+      }));
+      setRaffleWinners(prev => ({ ...prev, [raffleId]: winners }));
+    }
   };
 
   const handleCreateRaffle = async () => {
@@ -197,15 +233,23 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
         const isWinner = winners.has(playerId);
         const newCarryover = isWinner ? 0 : previousCarryover + 1;
 
-        // Upsert raffle_weights
-        await supabase.from("raffle_weights").upsert({
-          event_id: eventId,
-          player_id: playerId,
-          entries_before: previousCarryover,
-          entries_next: newCarryover,
-          updated_by: user.id,
-          last_updated: new Date().toISOString(),
-        });
+        // Upsert raffle_weights with proper conflict handling
+        const { error: upsertError } = await supabase
+          .from("raffle_weights")
+          .upsert({
+            event_id: eventId,
+            player_id: playerId,
+            entries_before: previousCarryover,
+            entries_next: newCarryover,
+            updated_by: user.id,
+            last_updated: new Date().toISOString(),
+          }, {
+            onConflict: 'player_id,event_id'
+          });
+
+        if (upsertError) {
+          console.error("Failed to upsert raffle_weights:", upsertError);
+        }
 
         // Insert history
         await supabase.from("raffle_entries_history").insert({
@@ -336,44 +380,70 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
           </TableHeader>
           <TableBody>
             {raffles.map((raffle) => (
-              <TableRow key={raffle.id}>
-                <TableCell className="font-medium">{raffle.name}</TableCell>
-                <TableCell>{raffle.medals?.name}</TableCell>
-                <TableCell>{raffle.total_prizes}</TableCell>
-                <TableCell>
-                  <span className={raffle.status === "completed" ? "text-green-600" : "text-yellow-600"}>
-                    {raffle.status}
-                  </span>
-                </TableCell>
-                <TableCell className="text-right">
-                  {canManage && raffle.status === "pending" && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleDrawRaffle(raffle.id)}
-                    >
-                      <Shuffle className="h-4 w-4 mr-1" />
-                      Draw Winners
-                    </Button>
-                  )}
-                  {raffle.status === "completed" && (
-                    <div className="flex gap-2 justify-end">
+              <>
+                <TableRow key={raffle.id}>
+                  <TableCell className="font-medium">{raffle.name}</TableCell>
+                  <TableCell>{raffle.medals?.name}</TableCell>
+                  <TableCell>{raffle.total_prizes}</TableCell>
+                  <TableCell>
+                    <span className={raffle.status === "completed" ? "text-green-600" : "text-yellow-600"}>
+                      {raffle.status}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {canManage && raffle.status === "pending" && (
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => handleExportWinners(raffle.id)}
+                        onClick={() => handleDrawRaffle(raffle.id)}
                       >
-                        <Copy className="h-4 w-4 mr-1" />
-                        Copy Winners
+                        <Shuffle className="h-4 w-4 mr-1" />
+                        Draw Winners
                       </Button>
-                      <span className="text-sm text-muted-foreground flex items-center">
-                        <Trophy className="h-4 w-4 mr-1" />
-                        Complete
-                      </span>
-                    </div>
-                  )}
-                </TableCell>
-              </TableRow>
+                    )}
+                    {raffle.status === "completed" && (
+                      <div className="flex gap-2 justify-end">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleExportWinners(raffle.id)}
+                        >
+                          <Copy className="h-4 w-4 mr-1" />
+                          Copy Winners
+                        </Button>
+                        <Badge variant="secondary" className="flex items-center gap-1">
+                          <Trophy className="h-3 w-3" />
+                          Complete
+                        </Badge>
+                      </div>
+                    )}
+                  </TableCell>
+                </TableRow>
+                {raffle.status === "completed" && raffleWinners[raffle.id] && (
+                  <TableRow key={`${raffle.id}-winners`}>
+                    <TableCell colSpan={5} className="bg-muted/50">
+                      <div className="py-2">
+                        <p className="text-sm font-medium mb-2">Winners (25M each):</p>
+                        {raffleWinners[raffle.id].length > 0 ? (
+                          <ul className="text-sm space-y-1">
+                            {raffleWinners[raffle.id].map((winner, idx) => (
+                              <li key={winner.player_id} className="flex items-center gap-2">
+                                <Badge variant="outline" className="w-6 h-6 rounded-full p-0 flex items-center justify-center text-xs">
+                                  {idx + 1}
+                                </Badge>
+                                <span>{winner.player_name}</span>
+                                <span className="text-muted-foreground">({winner.prize_amount.toLocaleString()} medals)</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-sm text-muted-foreground">No winners yet.</p>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </>
             ))}
           </TableBody>
         </Table>

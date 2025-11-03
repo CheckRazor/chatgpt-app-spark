@@ -24,7 +24,7 @@ const WeightedDistribution = ({ eventId, canManage }: WeightedDistributionProps)
       // Get event totals
       const { data: eventTotals } = await supabase
         .from("event_totals")
-        .select("id, medal_id, total_amount, raffle_amount_used, min_score_for_raffle")
+        .select("id, medal_id, total_amount, raffle_amount_used, distributed_amount, min_score_for_raffle")
         .eq("event_id", eventId);
 
       if (!eventTotals || eventTotals.length === 0) {
@@ -35,17 +35,18 @@ const WeightedDistribution = ({ eventId, canManage }: WeightedDistributionProps)
       for (const total of eventTotals) {
         const minScore = total.min_score_for_raffle || 0;
         
-        // Calculate remaining medals (50% of total)
+        // Calculate remaining medals correctly
         const totalPot = total.total_amount;
         const raffleUsed = total.raffle_amount_used || 0;
-        const remainingMedals = totalPot - raffleUsed;
+        const alreadyDistributed = total.distributed_amount || 0;
+        const remainingMedals = totalPot - raffleUsed - alreadyDistributed;
 
         if (remainingMedals <= 0) {
-          console.warn(`No remaining medals for medal_id ${total.medal_id}`);
+          toast.info(`No remaining medals to distribute for this event/medal.`);
           continue;
         }
 
-        // Get qualified players (same pool as raffle)
+        // Get qualified players (same pool as raffle) - INCLUDES raffle winners
         const { data: scores } = await supabase
           .from("scores")
           .select("player_id, score")
@@ -53,7 +54,7 @@ const WeightedDistribution = ({ eventId, canManage }: WeightedDistributionProps)
           .gte("score", minScore);
 
         if (!scores || scores.length === 0) {
-          console.warn("No qualified players for weighted distribution");
+          toast.info("No qualified players for weighted distribution");
           continue;
         }
 
@@ -122,12 +123,12 @@ const WeightedDistribution = ({ eventId, canManage }: WeightedDistributionProps)
 
         if (ledgerError) throw ledgerError;
 
-        // Update event_totals with distributed amount
+        // Update event_totals with distributed amount (increment)
+        const newDistributedAmount = alreadyDistributed + totalDistributed;
         await supabase
           .from("event_totals")
           .update({ 
-            remaining_amount_distributed: totalDistributed,
-            distributed_amount: raffleUsed + totalDistributed,
+            distributed_amount: newDistributedAmount,
           })
           .eq("id", total.id);
 
@@ -154,8 +155,8 @@ const WeightedDistribution = ({ eventId, canManage }: WeightedDistributionProps)
           <div>
             <h3 className="font-semibold mb-2">Weighted Distribution (50% of Pot)</h3>
             <p className="text-sm text-muted-foreground mb-4">
-              Distributes remaining medals (after raffle) to qualified players based on their scores.
-              Each player is capped at 10% of the remaining pot. Goes to ledger.
+              Distributes remaining medals (after raffle) to ALL qualified players based on their scores.
+              Each player is capped at 10% of the remaining pot. Goes to ledger. Raffle winners are included.
             </p>
           </div>
           <Button onClick={() => setShowDialog(true)} className="w-full">
@@ -170,9 +171,9 @@ const WeightedDistribution = ({ eventId, canManage }: WeightedDistributionProps)
           <AlertDialogHeader>
             <AlertDialogTitle>Run Weighted Distribution?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will distribute the remaining medals (after raffle) to all qualified players
-              based on their scores, with a 10% cap per player. These amounts will be added to
-              the ledger and affect player balances.
+              This will distribute the remaining medals (after raffle) to ALL qualified players
+              based on their scores, with a 10% cap per player. Raffle winners ARE included in this
+              distribution. These amounts will be added to the ledger and affect player balances.
               <br /><br />
               Make sure the raffle has been completed first.
             </AlertDialogDescription>
