@@ -6,6 +6,7 @@ import { supabase } from "@/integrations/supabase/client";
 import Layout from "@/components/Layout";
 import EventTotals from "@/components/event-details/EventTotals";
 import RaffleManager from "@/components/event-details/RaffleManager";
+import WeightedDistribution from "@/components/event-details/WeightedDistribution";
 import LedgerView from "@/components/event-details/LedgerView";
 import EventScoresList from "@/components/event-details/EventScoresList";
 import {
@@ -104,7 +105,10 @@ const EventDetails = () => {
               </TabsContent>
 
               <TabsContent value="raffles" className="mt-6">
-                <RaffleManager eventId={eventId!} canManage={canManage} />
+                <div className="space-y-6">
+                  <RaffleManager eventId={eventId!} canManage={canManage} />
+                  <WeightedDistribution eventId={eventId!} canManage={canManage} />
+                </div>
               </TabsContent>
 
               <TabsContent value="ledger" className="mt-6">

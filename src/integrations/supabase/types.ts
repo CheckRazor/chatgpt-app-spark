@@ -94,6 +94,8 @@ export type Database = {
           id: string
           medal_id: string
           min_score_for_raffle: number | null
+          raffle_amount_used: number | null
+          remaining_amount_distributed: number | null
           total_amount: number
           updated_at: string
           verified: boolean
@@ -108,6 +110,8 @@ export type Database = {
           id?: string
           medal_id: string
           min_score_for_raffle?: number | null
+          raffle_amount_used?: number | null
+          remaining_amount_distributed?: number | null
           total_amount: number
           updated_at?: string
           verified?: boolean
@@ -122,6 +126,8 @@ export type Database = {
           id?: string
           medal_id?: string
           min_score_for_raffle?: number | null
+          raffle_amount_used?: number | null
+          remaining_amount_distributed?: number | null
           total_amount?: number
           updated_at?: string
           verified?: boolean

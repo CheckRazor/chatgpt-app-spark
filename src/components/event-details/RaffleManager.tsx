@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Card } from "@/components/ui/card";
-import { Shuffle, Trophy } from "lucide-react";
+import { Shuffle, Trophy, Copy } from "lucide-react";
 import { toast } from "sonner";
 
 interface Medal {
@@ -28,6 +28,8 @@ interface RaffleManagerProps {
   canManage: boolean;
 }
 
+const RAFFLE_WIN_AMOUNT = 25000000; // 25M medals per win
+
 const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
   const [medals, setMedals] = useState<Medal[]>([]);
   const [raffles, setRaffles] = useState<Raffle[]>([]);
@@ -35,7 +37,6 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
     name: "",
     medalId: "",
     totalPrizes: 1,
-    weightFormula: "score",
   });
 
   useEffect(() => {
@@ -68,14 +69,14 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
         name: newRaffle.name,
         medal_id: newRaffle.medalId,
         total_prizes: newRaffle.totalPrizes,
-        weight_formula: newRaffle.weightFormula,
+        weight_formula: "score",
         created_by: user.id,
       }]);
 
       if (error) throw error;
 
       toast.success("Raffle created successfully");
-      setNewRaffle({ name: "", medalId: "", totalPrizes: 1, weightFormula: "score" });
+      setNewRaffle({ name: "", medalId: "", totalPrizes: 1 });
       fetchRaffles();
     } catch (error: any) {
       toast.error("Failed to create raffle: " + error.message);
@@ -86,35 +87,76 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
     if (!canManage) return;
 
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Not authenticated");
+
+      // Get event totals to find min_score_for_raffle
+      const { data: eventTotals } = await supabase
+        .from("event_totals")
+        .select("min_score_for_raffle")
+        .eq("event_id", eventId)
+        .limit(1)
+        .maybeSingle();
+
+      const minScore = eventTotals?.min_score_for_raffle || 0;
+
+      // Get qualified players (score >= min_score_for_raffle)
       const { data: scores } = await supabase
         .from("scores")
-        .select("player_id, score")
-        .eq("event_id", eventId);
+        .select("player_id, score, players(canonical_name)")
+        .eq("event_id", eventId)
+        .gte("score", minScore);
 
       if (!scores || scores.length === 0) {
-        toast.error("No scores available for this event");
+        toast.error("No qualified players for this event");
         return;
       }
+
+      // Get carryover entries from raffle_weights
+      const { data: carryovers } = await supabase
+        .from("raffle_weights")
+        .select("player_id, entries_next")
+        .eq("event_id", eventId);
+
+      const carryoverMap = new Map<string, number>();
+      carryovers?.forEach(c => carryoverMap.set(c.player_id, c.entries_next || 0));
+
+      // Build weighted pool: base_entries (1) + carryover
+      const weightedPool: { player_id: string; entries: number; name: string }[] = [];
+      scores.forEach(score => {
+        const baseEntries = 1;
+        const carryover = carryoverMap.get(score.player_id) || 0;
+        const totalEntries = baseEntries + carryover;
+        
+        // Add player to pool multiple times based on their entries
+        for (let i = 0; i < totalEntries; i++) {
+          weightedPool.push({
+            player_id: score.player_id,
+            entries: totalEntries,
+            name: (score.players as any)?.canonical_name || "Unknown",
+          });
+        }
+      });
 
       const raffle = raffles.find(r => r.id === raffleId);
       if (!raffle) return;
 
-      const totalWeight = scores.reduce((sum, s) => sum + s.score, 0);
+      // Draw winners (1 win per player)
       const winners = new Set<string>();
+      const winnersList: { player_id: string; name: string }[] = [];
+      let remainingPool = [...weightedPool];
 
-      while (winners.size < raffle.total_prizes && winners.size < scores.length) {
-        let random = Math.random() * totalWeight;
-        for (const score of scores) {
-          random -= score.score;
-          if (random <= 0) {
-            winners.add(score.player_id);
-            break;
-          }
+      while (winners.size < raffle.total_prizes && remainingPool.length > 0) {
+        const randomIndex = Math.floor(Math.random() * remainingPool.length);
+        const selected = remainingPool[randomIndex];
+        
+        if (!winners.has(selected.player_id)) {
+          winners.add(selected.player_id);
+          winnersList.push({ player_id: selected.player_id, name: selected.name });
+          // Remove all entries for this player from pool
+          remainingPool = remainingPool.filter(p => p.player_id !== selected.player_id);
         }
       }
-
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not authenticated");
 
       // Create batch operation
       const { data: batchOp, error: batchError } = await supabase
@@ -128,6 +170,7 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
             raffle_name: raffle.name,
             total_prizes: raffle.total_prizes,
             winners_count: winners.size,
+            winners: winnersList.map(w => w.name),
           },
         })
         .select()
@@ -135,17 +178,47 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
 
       if (batchError) throw batchError;
 
-      const entries = scores.map(score => ({
+      // Insert raffle entries (winners and non-winners)
+      const allPlayerIds = new Set(scores.map(s => s.player_id));
+      const entries = Array.from(allPlayerIds).map(playerId => ({
         raffle_id: raffleId,
-        player_id: score.player_id,
-        weight: score.score,
-        is_winner: winners.has(score.player_id),
-        prize_amount: winners.has(score.player_id) ? 1 : 0,
+        player_id: playerId,
+        weight: (carryoverMap.get(playerId) || 0) + 1,
+        is_winner: winners.has(playerId),
+        prize_amount: winners.has(playerId) ? RAFFLE_WIN_AMOUNT : null,
         batch_operation_id: batchOp.id,
       }));
 
       await supabase.from("raffle_entries").insert(entries);
 
+      // Update raffle_weights and history for all qualified players
+      for (const playerId of allPlayerIds) {
+        const previousCarryover = carryoverMap.get(playerId) || 0;
+        const isWinner = winners.has(playerId);
+        const newCarryover = isWinner ? 0 : previousCarryover + 1;
+
+        // Upsert raffle_weights
+        await supabase.from("raffle_weights").upsert({
+          event_id: eventId,
+          player_id: playerId,
+          entries_before: previousCarryover,
+          entries_next: newCarryover,
+          updated_by: user.id,
+          last_updated: new Date().toISOString(),
+        });
+
+        // Insert history
+        await supabase.from("raffle_entries_history").insert({
+          event_id: eventId,
+          player_id: playerId,
+          entries_before: previousCarryover,
+          entries_after: newCarryover,
+          reason: isWinner ? "won_raffle_reset" : "missed_raffle_but_qualified",
+          created_by: user.id,
+        });
+      }
+
+      // Mark raffle as completed
       await supabase
         .from("raffles")
         .update({
@@ -154,25 +227,43 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
         })
         .eq("id", raffleId);
 
-      const winnerEntries = entries.filter(e => e.is_winner);
-      for (const entry of winnerEntries) {
-        await supabase.from("ledger_transactions").insert([{
-          player_id: entry.player_id,
-          medal_id: raffle.medal_id,
-          amount: 1,
-          transaction_type: "raffle_win",
-          event_id: eventId,
-          raffle_id: raffleId,
-          description: `Won raffle: ${raffle.name}`,
-          created_by: user.id,
-          batch_operation_id: batchOp.id,
-        }]);
-      }
+      // Update event_totals with raffle amount used
+      const raffleMedalsUsed = winners.size * RAFFLE_WIN_AMOUNT;
+      await supabase
+        .from("event_totals")
+        .update({ raffle_amount_used: raffleMedalsUsed })
+        .eq("event_id", eventId)
+        .eq("medal_id", raffle.medal_id);
 
-      toast.success(`Raffle drawn! ${winners.size} winners selected`);
+      toast.success(`Raffle drawn! ${winners.size} winners selected (${raffleMedalsUsed.toLocaleString()} medals total)`);
       fetchRaffles();
     } catch (error: any) {
       toast.error("Failed to draw raffle: " + error.message);
+      console.error(error);
+    }
+  };
+
+  const handleExportWinners = async (raffleId: string) => {
+    try {
+      const { data } = await supabase
+        .from("raffle_entries")
+        .select("player_id, players(canonical_name)")
+        .eq("raffle_id", raffleId)
+        .eq("is_winner", true)
+        .order("created_at", { ascending: true });
+
+      if (!data || data.length === 0) {
+        toast.error("No winners found");
+        return;
+      }
+
+      const names = data.map(entry => (entry.players as any)?.canonical_name || "Unknown");
+      const exportString = names.join(", ");
+
+      await navigator.clipboard.writeText(exportString);
+      toast.success("Winners copied to clipboard!");
+    } catch (error: any) {
+      toast.error("Failed to export winners: " + error.message);
     }
   };
 
@@ -188,7 +279,7 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
     <div className="space-y-6">
       {canManage && (
         <Card className="p-6">
-          <h3 className="font-semibold mb-4">Create Raffle</h3>
+          <h3 className="font-semibold mb-4">Create Raffle (25M per winner)</h3>
           <div className="grid gap-4">
             <div>
               <Label>Raffle Name</Label>
@@ -266,10 +357,20 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
                     </Button>
                   )}
                   {raffle.status === "completed" && (
-                    <span className="text-sm text-muted-foreground">
-                      <Trophy className="h-4 w-4 inline mr-1" />
-                      Complete
-                    </span>
+                    <div className="flex gap-2 justify-end">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleExportWinners(raffle.id)}
+                      >
+                        <Copy className="h-4 w-4 mr-1" />
+                        Copy Winners
+                      </Button>
+                      <span className="text-sm text-muted-foreground flex items-center">
+                        <Trophy className="h-4 w-4 mr-1" />
+                        Complete
+                      </span>
+                    </div>
                   )}
                 </TableCell>
               </TableRow>
