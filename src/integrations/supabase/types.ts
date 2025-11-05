@@ -781,6 +781,10 @@ export type Database = {
         }
         Returns: boolean
       }
+      run_weighted_distribution_v1: {
+        Args: { actor: string; event_uuid: string; medal_uuid: string }
+        Returns: Json
+      }
       upsert_scores_big_v2: { Args: { payload: Json }; Returns: Json }
     }
     Enums: {

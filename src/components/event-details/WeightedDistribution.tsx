@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Calculator } from "lucide-react";
 import { toast } from "sonner";
+import { useQuery } from "@tanstack/react-query";
 
 interface WeightedDistributionProps {
   eventId: string;
@@ -15,124 +16,67 @@ const WeightedDistribution = ({ eventId, canManage }: WeightedDistributionProps)
   const [showDialog, setShowDialog] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  // Fetch event totals for summary display
+  const { data: eventTotals } = useQuery({
+    queryKey: ['event-totals-summary', eventId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('event_totals')
+        .select('medal_id, total_amount, raffle_amount_used, distributed_amount, medals(name)')
+        .eq('event_id', eventId);
+      
+      if (error) throw error;
+      return data;
+    },
+  });
+
   const handleDistribute = async () => {
     setLoading(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error("Not authenticated");
 
-      // Get event totals
+      // Get event totals to process each medal type
       const { data: eventTotals } = await supabase
         .from("event_totals")
-        .select("id, medal_id, total_amount, raffle_amount_used, distributed_amount, min_score_for_raffle")
+        .select("medal_id, total_amount, raffle_amount_used, distributed_amount")
         .eq("event_id", eventId);
 
       if (!eventTotals || eventTotals.length === 0) {
         throw new Error("No event totals configured");
       }
 
-      // Process each medal type
+      // Process each medal type using server-side RPC
       for (const total of eventTotals) {
-        const minScore = total.min_score_for_raffle || 0;
-        
-        // Calculate remaining medals correctly
-        const totalPot = total.total_amount;
-        const raffleUsed = total.raffle_amount_used || 0;
-        const alreadyDistributed = total.distributed_amount || 0;
-        const remainingMedals = totalPot - raffleUsed - alreadyDistributed;
-
-        if (remainingMedals <= 0) {
-          toast.info(`No remaining medals to distribute for this event/medal.`);
-          continue;
-        }
-
-        // Get qualified players (same pool as raffle) - INCLUDES raffle winners
-        const { data: scores } = await supabase
-          .from("scores")
-          .select("player_id, score")
-          .eq("event_id", eventId)
-          .gte("score", minScore);
-
-        if (!scores || scores.length === 0) {
-          toast.info("No qualified players for weighted distribution");
-          continue;
-        }
-
-        // Calculate total score for proportional distribution
-        const totalScore = scores.reduce((sum, s) => sum + Number(s.score), 0);
-
-        if (totalScore === 0) {
-          throw new Error("Total score is zero, cannot distribute");
-        }
-
-        // Calculate 10% cap
-        const maxPerPlayer = Math.floor(remainingMedals * 0.10);
-
-        // Calculate shares with 10% cap
-        const distributions: { player_id: string; amount: number }[] = [];
-        let totalDistributed = 0;
-
-        for (const score of scores) {
-          const rawShare = Math.floor((Number(score.score) / totalScore) * remainingMedals);
-          const cappedShare = Math.min(rawShare, maxPerPlayer);
-          
-          if (cappedShare > 0) {
-            distributions.push({
-              player_id: score.player_id,
-              amount: cappedShare,
-            });
-            totalDistributed += cappedShare;
+        const { data: result, error } = await supabase.rpc(
+          'run_weighted_distribution_v1',
+          {
+            event_uuid: eventId,
+            medal_uuid: total.medal_id,
+            actor: user.id
           }
+        );
+
+        if (error) throw error;
+        if (!result) continue;
+
+        const resultObj = result as any;
+
+        if (resultObj.status === 'noop') {
+          if (resultObj.reason === 'no_remaining') {
+            toast.info(`No remaining medals to distribute for this event/medal.`);
+          } else if (resultObj.reason === 'no_scores') {
+            toast.info(`No qualified players with scores for weighted distribution.`);
+          }
+          continue;
         }
 
-        // Create batch operation
-        const { data: batchOp, error: batchError } = await supabase
-          .from("batch_operations")
-          .insert({
-            operation_type: "weighted_distribution",
-            event_id: eventId,
-            created_by: user.id,
-            metadata: {
-              medal_id: total.medal_id,
-              remaining_medals: remainingMedals,
-              total_distributed: totalDistributed,
-              player_count: distributions.length,
-              max_per_player: maxPerPlayer,
-            },
-          })
-          .select()
-          .single();
-
-        if (batchError) throw batchError;
-
-        // Insert ledger transactions for weighted distribution
-        const ledgerEntries = distributions.map(dist => ({
-          player_id: dist.player_id,
-          medal_id: total.medal_id,
-          amount: dist.amount,
-          transaction_type: "weighted_distribution",
-          event_id: eventId,
-          description: "Score-based distribution (50% pot, 10% cap)",
-          created_by: user.id,
-          batch_operation_id: batchOp.id,
-        }));
-
-        const { error: ledgerError } = await supabase
-          .from("ledger_transactions")
-          .insert(ledgerEntries);
-
-        if (ledgerError) throw ledgerError;
-
-        // Update event_totals with distributed amount (increment)
-        const newDistributedAmount = alreadyDistributed + totalDistributed;
-        await supabase
-          .from("event_totals")
-          .update({ 
-            distributed_amount: newDistributedAmount,
-          })
-          .eq("id", total.id);
-
-        toast.success(`Distributed ${totalDistributed.toLocaleString()} medals to ${distributions.length} players`);
+        if (resultObj.status === 'ok') {
+          toast.success(
+            `Distributed ${Number(resultObj.distributed_now).toLocaleString()} medals to ${resultObj.players} players. ` +
+            `Remaining pot: ${Number(resultObj.remaining_after).toLocaleString()}.`
+          );
+        }
       }
 
       setShowDialog(false);
@@ -159,6 +103,29 @@ const WeightedDistribution = ({ eventId, canManage }: WeightedDistributionProps)
               Each player is capped at 10% of the remaining pot. Goes to ledger. Raffle winners are included.
             </p>
           </div>
+
+          {eventTotals && eventTotals.length > 0 && (
+            <div className="text-xs text-muted-foreground space-y-1 border-t pt-3">
+              <div className="font-medium mb-1">Current Status:</div>
+              {eventTotals.map((total: any) => {
+                const raffleUsed = Number(total.raffle_amount_used || 0);
+                const distributed = Number(total.distributed_amount || 0);
+                const remaining = Number(total.total_amount) - raffleUsed - distributed;
+                
+                return (
+                  <div key={total.medal_id} className="pl-2">
+                    <div className="font-medium">{total.medals?.name || 'Unknown Medal'}:</div>
+                    <div className="pl-2">
+                      Raffle used: {raffleUsed.toLocaleString()} • 
+                      Distributed: {distributed.toLocaleString()} • 
+                      Remaining: {remaining.toLocaleString()}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           <Button onClick={() => setShowDialog(true)} className="w-full">
             <Calculator className="h-4 w-4 mr-2" />
             Run Weighted Distribution

@@ -273,11 +273,16 @@ const RaffleManager = ({ eventId, canManage }: RaffleManagerProps) => {
 
       // Update event_totals with raffle amount used
       const raffleMedalsUsed = winners.size * RAFFLE_WIN_AMOUNT;
-      await supabase
+      const { error: updateTotalsError } = await supabase
         .from("event_totals")
         .update({ raffle_amount_used: raffleMedalsUsed })
         .eq("event_id", eventId)
         .eq("medal_id", raffle.medal_id);
+
+      if (updateTotalsError) {
+        console.error("Failed to update raffle_amount_used:", updateTotalsError);
+        throw updateTotalsError;
+      }
 
       toast.success(`Raffle drawn! ${winners.size} winners selected (${raffleMedalsUsed.toLocaleString()} medals total)`);
       fetchRaffles();
