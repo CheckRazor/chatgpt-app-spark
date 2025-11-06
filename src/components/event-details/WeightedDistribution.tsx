@@ -46,10 +46,10 @@ const WeightedDistribution = ({ eventId, canManage }: WeightedDistributionProps)
         throw new Error("No event totals configured");
       }
 
-      // Process each medal type using server-side RPC
+      // Process each medal type using server-side RPC v2 (alt→main aggregation + full reallocation)
       for (const total of eventTotals) {
         const { data: result, error } = await supabase.rpc(
-          'run_weighted_distribution_v1',
+          'run_weighted_distribution_v2',
           {
             event_uuid: eventId,
             medal_uuid: total.medal_id,
