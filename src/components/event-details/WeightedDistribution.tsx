@@ -48,6 +48,12 @@ const WeightedDistribution = ({ eventId, canManage }: WeightedDistributionProps)
 
       // Process each medal type using server-side RPC v2 (alt→main aggregation + full reallocation)
       for (const total of eventTotals) {
+        // Guard against undefined IDs
+        if (!eventId || !total.medal_id || !user.id) {
+          toast.error("Missing required parameters for distribution");
+          continue;
+        }
+
         const { data: result, error } = await supabase.rpc(
           'run_weighted_distribution_v2',
           {
@@ -57,7 +63,10 @@ const WeightedDistribution = ({ eventId, canManage }: WeightedDistributionProps)
           }
         );
 
-        if (error) throw error;
+        if (error) {
+          // Surface the RPC error message
+          throw new Error(error.message || "RPC call failed");
+        }
         if (!result) continue;
 
         const resultObj = result as any;
@@ -81,7 +90,7 @@ const WeightedDistribution = ({ eventId, canManage }: WeightedDistributionProps)
 
       setShowDialog(false);
     } catch (error: any) {
-      toast.error("Failed to distribute: " + error.message);
+      toast.error("Failed to distribute: " + (error.message || "Unknown error"));
       console.error(error);
     } finally {
       setLoading(false);
