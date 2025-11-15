@@ -4,12 +4,18 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Trophy, Medal, Award } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
+interface MedalBalance {
+  medal_id: string;
+  medal_name: string;
+  medal_color?: string;
+  amount: number;
+  value: number;
+}
+
 interface PlayerBalance {
   player_id: string;
   player_name: string;
-  gold: number;
-  silver: number;
-  bronze: number;
+  medal_balances: MedalBalance[];
   total_value: number;
 }
 
@@ -17,9 +23,7 @@ const PlayerLeaderboard = () => {
   const { data: balances, isLoading, error } = useQuery({
     queryKey: ["player-balances-v2"],
     queryFn: async () => {
-      //
-      // 1) medals (same as before)
-      //
+      // 1) Fetch all medals
       const { data: medals, error: medalsError } = await supabase
         .from("medals")
         .select("*")
@@ -27,14 +31,10 @@ const PlayerLeaderboard = () => {
 
       if (medalsError) throw medalsError;
 
-      const goldMedal = medals.find((m) => m.name === "Gold");
-      const silverMedal = medals.find((m) => m.name === "Silver");
-      const bronzeMedal = medals.find((m) => m.name === "Bronze");
+      // Create a medal lookup map
+      const medalMap = new Map(medals?.map(m => [m.id, m]) || []);
 
-      //
-      // 2) pull ONLY ledger transactions that belong to ACTIVE (non-deleted) events
-      //    we INNER JOIN events and require events.deleted_at IS NULL
-      //
+      // 2) Pull ONLY ledger transactions that belong to ACTIVE (non-deleted) events
       const { data: transactions, error: txError } = await supabase
         .from("ledger_transactions")
         .select(
@@ -51,46 +51,49 @@ const PlayerLeaderboard = () => {
 
       if (txError) throw txError;
 
-      //
-      // 3) aggregate per player
-      //
+      // 3) Aggregate per player and medal
       const balanceMap = new Map<string, PlayerBalance>();
 
       (transactions || []).forEach((tx: any) => {
-        // extra guard: if somehow an event got through without join
         if (!tx.events || tx.events.deleted_at) {
           return;
         }
 
         const playerId = tx.player_id;
         const playerName = tx.players?.canonical_name || "Unknown";
+        const medal = medalMap.get(tx.medal_id);
+
+        if (!medal) return;
 
         if (!balanceMap.has(playerId)) {
           balanceMap.set(playerId, {
             player_id: playerId,
             player_name: playerName,
-            gold: 0,
-            silver: 0,
-            bronze: 0,
+            medal_balances: [],
             total_value: 0,
           });
         }
 
         const balance = balanceMap.get(playerId)!;
 
-        if (tx.medal_id === goldMedal?.id) {
-          balance.gold += tx.amount;
-          balance.total_value += tx.amount * (goldMedal?.value || 0);
-        } else if (tx.medal_id === silverMedal?.id) {
-          balance.silver += tx.amount;
-          balance.total_value += tx.amount * (silverMedal?.value || 0);
-        } else if (tx.medal_id === bronzeMedal?.id) {
-          balance.bronze += tx.amount;
-          balance.total_value += tx.amount * (bronzeMedal?.value || 0);
+        // Find or create medal balance entry
+        let medalBalance = balance.medal_balances.find(mb => mb.medal_id === tx.medal_id);
+        if (!medalBalance) {
+          medalBalance = {
+            medal_id: tx.medal_id,
+            medal_name: medal.name,
+            medal_color: medal.color,
+            amount: 0,
+            value: medal.value,
+          };
+          balance.medal_balances.push(medalBalance);
         }
+
+        medalBalance.amount += tx.amount;
+        balance.total_value += tx.amount * medal.value;
       });
 
-      // 4) sort + limit
+      // 4) Sort + limit
       return Array.from(balanceMap.values())
         .sort((a, b) => b.total_value - a.total_value)
         .slice(0, 10);
@@ -140,20 +143,16 @@ const PlayerLeaderboard = () => {
             <span className="font-medium">{balance.player_name}</span>
           </div>
           <div className="flex items-center gap-4 text-sm">
-            <div className="flex items-center gap-1">
-              <span className="text-yellow-500">🥇</span>
-              <span>{balance.gold}</span>
-            </div>
-            <div className="flex items-center gap-1">
-              <span className="text-gray-400">🥈</span>
-              <span>{balance.silver}</span>
-            </div>
-            <div className="flex items-center gap-1">
-              <span className="text-amber-600">🥉</span>
-              <span>{balance.bronze}</span>
-            </div>
+            {balance.medal_balances.slice(0, 3).map((medalBalance) => (
+              <div key={medalBalance.medal_id} className="flex items-center gap-1">
+                <span className="font-medium text-muted-foreground">
+                  {medalBalance.medal_name}:
+                </span>
+                <span>{medalBalance.amount.toLocaleString()}</span>
+              </div>
+            ))}
             <div className="ml-2 font-bold text-primary">
-              {balance.total_value}
+              {balance.total_value.toLocaleString()}
             </div>
           </div>
         </div>
